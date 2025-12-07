@@ -1,7 +1,7 @@
 import torch
 
 # Path or parameters for data
-DATASET_NAME = ''
+DATASET_NAME = 'ncduy/mt-en-vi'
 SP_DIR = 'trained_tokenizer'
 SRC_DIR = 'src'
 TRG_DIR = 'trg'
