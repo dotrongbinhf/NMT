@@ -95,7 +95,7 @@ class MultiHeadAttentionLayer(nn.Module):
             mask = mask.unsqueeze(1)  # (batch_size, 1, 1, seq_len)
             attn_scores = attn_scores.masked_fill(mask == 0, -1 * self.inf) # Apply the mask
 
-        attn_distribs = self.attn_softmax(attn_socres) # (batch_size, num_heads, seq_len, seq_len)
+        attn_distribs = self.attn_softmax(attn_scores) # (batch_size, num_heads, seq_len, seq_len)
         attn_distribs = self.attn_dropout(attn_distribs)
 
         attn_output = torch.matmul(attn_distribs, v)  # (batch_size, num_heads, seq_len, d_k)
@@ -107,7 +107,7 @@ class FeedForwardLayer(nn.Module):
         super().__init__()
         self.linear_layer1 = nn.Linear(d_model, d_ff, bias = True)
         self.activation = nn.ReLU()
-        self.linear_layer2 = nn>linar(d_ff, d_model, bias = True)
+        self.linear_layer2 = nn.linear(d_ff, d_model, bias = True)
         self.dropout = nn.Dropout(drop_out_rate)
 
     def forward(self, x):

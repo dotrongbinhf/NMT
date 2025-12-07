@@ -142,8 +142,8 @@ class Manager():
 
                 if mean_loss < self.best_loss:
                     self.best_loss = mean_loss
-                    if not os.path.exists(CHECKPOINT_DIR):
-                        os.makedirs(CHECKPOINT_DIR)
+                    if not os.path.exists(ckpt_dir):
+                        os.makedirs(ckpt_dir)
                     
                     # 9. UNWRAP MODEL BEFORE SAVING
                     # DDP wraps model in 'module.', we need to unwrap it 
@@ -204,6 +204,7 @@ class Manager():
         
         # 2. Create Mask
         e_mask = (src_tensor != self.pad_id).unsqueeze(1).unsqueeze(2)
+        start_time = datetime.datetime.now()
         
         print(f"Translating: '{input_sentence}'...")
 
@@ -237,7 +238,7 @@ class Manager():
         
     def greedy_search(self, e_output, e_mask):
         last_words = torch.LongTensor([pad_id] * seq_len).to(device) # (L)
-        last_words[0] = sos_id # (L)
+        last_words[0] = bos_id # (L)
         cur_len = 1
 
         for i in range(seq_len):
@@ -280,7 +281,7 @@ class Manager():
     def beam_search(self, e_output, e_mask):
         cur_queue = PriorityQueue()
         for k in range(beam_size):
-            cur_queue.put(BeamNode(sos_id, -0.0, [sos_id]))
+            cur_queue.put(BeamNode(bos_id, -0.0, [bos_id]))
         
         finished_count = 0
         
