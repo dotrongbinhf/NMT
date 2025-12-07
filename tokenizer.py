@@ -1,136 +1,57 @@
-import os
-import torch
-import glob
-import argparse
 import sentencepiece as spm
+from datasets import load_dataset
 
-def train_tokenizer(path_to_data_root):
-    spm.SentencePieceTrainer.train(
-        input = os.path.join(path_to_data_root, "train.vi.txt"),
-        model_prefix='vietnamese_tokenizer',  # <--- THIS IS THE FILENAME
-        vocab_size=32000,
-        model_type='bpe'
-    )
-
-class Token:
-    """A simple placeholder object to hold token attributes."""
-    pass
-
-import sentencepiece as spm
-
-class VietnameseTokenizer:
-    """
-    A wrapper specifically adapted for Google SentencePiece models (.model)
-    but maintaining the API structure of your FrenchTokenizer.
-    """
+def train_sentencepiece_from_huggingface():
+    # 1. Load Dataset in Streaming Mode
+    # 'streaming=True' is crucial. It downloads data on the fly, 
+    # so you don't need 50GB of RAM or disk space.
+    print("Setting up stream...")
+    dataset = load_dataset("ncduy/mt-en-vi", split="train", streaming=True)
     
-    def __init__(self, path_to_vocab, truncate=False, max_length=512):
-        self.path_to_vocab = path_to_vocab
-        self.sp = self.prepare_tokenizer()
-        
-        # SentencePiece calculates size differently than HF Tokenizers
-        self.vocab_size = self.sp.GetPieceSize()
-        
-        # 1. Map Special Tokens
-        # Note: SentencePiece usually uses: <unk>=0, <s>=1, </s>=2
-        self.bos_id = self.sp.PieceToId("<s>")
-        self.eos_id = self.sp.PieceToId("</s>")
-        self.unk_id = self.sp.PieceToId("<unk>")
-        
-        # Handle PAD: SentencePiece doesn't usually have a PAD token by default.
-        # We will check if it exists, otherwise use <unk> or -1
-        self.pad_id = self.sp.PieceToId("<pad>")
-        if self.pad_id == 0 and self.sp.IdToPiece(0) != "<pad>":
-             # Fallback if <pad> isn't in vocab
-             self.pad_id = self.unk_id 
-
-        self.special_tokens_dict = {
-            "[UNK]": self.unk_id,
-            "[PAD]": self.pad_id,
-            "[BOS]": self.bos_id,
-            "[EOS]": self.eos_id
-        }
-
-        self.truncate = truncate
-        # Reserve space for [BOS] and [EOS] (2 tokens)
-        self.max_len = max_length - 2 
-
-    def prepare_tokenizer(self):
-        # Load the SentencePiece model
-        sp = spm.SentencePieceProcessor()
-        sp.Load(self.path_to_vocab)
-        return sp
-
-    def encode(self, input_text):
-        """
-        Encodes text and manually adds [BOS] and [EOS] to mimic TemplateProcessing
-        """
-        def _process_single(text):
-            # 1. Encode to IDs
-            ids = self.sp.EncodeAsIds(text)
+    # 2. Define a Python Generator
+    # SentencePiece needs an iterator that yields strings.
+    # We loop through the dataset and yield the 'text' column.
+    def batch_iterator(dataset_stream, limit=2800000):
+        count = 0
+        for i, item in enumerate(dataset_stream):
+            if count >= limit:
+                break
             
-            # 2. Truncate if necessary (keeping room for BOS/EOS)
-            if self.truncate and len(ids) > self.max_len:
-                ids = ids[:self.max_len]
+            # Extract the text content
+            text = item.get("en", "")
             
-            # 3. Add [BOS] and [EOS]
-            return [self.bos_id] + ids + [self.eos_id]
-
-        # Handle Single String
-        if isinstance(input_text, str):
-            return _process_single(input_text)
-        
-        # Handle Batch (List of strings)
-        elif isinstance(input_text, list):
-            return [_process_single(t) for t in input_text]
-        
-        return []
-
-    def decode(self, input_ids, skip_special_tokens=True):
-        """
-        Decodes IDs back to text. 
-        """
-        def _decode_single(ids):
-            # Check if input is a tensor, convert to list
-            if hasattr(ids, 'tolist'):
-                ids = ids.tolist()
+            # Basic cleaning (optional but recommended)
+            # Remove newlines to prevent sentence splitting issues if needed
+            text = text.replace("\n", " ") 
+            
+            if text.strip():
+                yield text
+                count += 1
                 
-            if skip_special_tokens:
-                # Filter out BOS, EOS, PAD
-                ids = [i for i in ids if i not in [self.bos_id, self.eos_id, self.pad_id]]
-            
-            return self.sp.Decode(ids)
+        print(f"Processed {count} sentences for training.")
 
-        # Handle Batch (List of Lists)
-        if isinstance(input_ids, list) and len(input_ids) > 0 and isinstance(input_ids[0], list):
-            return [_decode_single(seq) for seq in input_ids]
-        
-        # Handle Single Sequence
-        return _decode_single(input_ids)
-        
-    # Add this so your training script can call tokenizer("text") directly
-    def __call__(self, text):
-        return {"input_ids": self.encode(text)}
-
-
-        
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tokenizer Prep")
-
-    parser.add_argument(
-        "--path_to_data_root", 
-        required=True, 
-        help="Path to where you want to save the final tokenized dataset",
-        type=str
+    # 3. Train SentencePiece using 'sentence_iterator'
+    # Note: We use 'sentence_iterator' instead of 'input'
+    print("Starting training (this might take a while)...")
+    
+    # Create the iterator
+    data_iter = batch_iterator(dataset, limit=2000000) # Adjust limit as needed
+    
+    spm.SentencePieceTrainer.train(
+        sentence_iterator=data_iter,
+        model_prefix='english_toknizer_spm', # Output filename (.model)
+        vocab_size=32000,                    # As discussed for IWSLT
+        character_coverage=0.9995,          # Good for Vietnamese
+        model_type='unigram',               # Best for Translation
+        pad_id=3,                           # Crucial for PyTorch
+        unk_id=0,
+        bos_id=1,
+        eos_id=2,
+        input_sentence_size=2000000,        # Buffer size for shuffling
+        shuffle_input_sentence=True         # Randomize samples for better training
     )
+    
+    print("Training finished! Saved 'vietnamese_wiki_spm.model'")
 
-    args = parser.parse_args()
-
-    train_tokenizer(args.path_to_data_root)
-
-    # tokenizer = VietnameseTokenizer("trained_tokenizer/french_wp.json")
-    # sentence = "Héllo world!"
-    # enc = tokenizer.encode(sentence)
-    # print(enc)
-    # dec = tokenizer.decode(enc, skip_special_tokens=False)
-    # print(dec)
+if __name__ == "__main__":
+    train_sentencepiece_from_huggingface()

@@ -63,7 +63,7 @@ class MultiHeadAttentionLayer(nn.Module):
         self.w_k = nn.Linear(d_model, d_model, bias = False)
         self.w_v = nn.Linear(d_model, d_model, bias = False)
 
-        self attn_softmax = nn.Softmax(dim = -1)
+        self.attn_softmax = nn.Softmax(dim = -1)
         self.attn_dropout = nn.Dropout(drop_out_rate)
 
         #w^o : linear layer to project concatenated output of all heads
