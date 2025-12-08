@@ -7,6 +7,7 @@ from torch import nn
 from accelerate import Accelerator
 from custom_data import get_dataloader
 
+import wandb
 import torch
 import sys, os
 import numpy as np
@@ -22,7 +23,18 @@ class Manager():
         # 1. INITIALIZE ACCELERATOR
         # This automatically detects if you have 1 GPU, 4 GPUs, or TPUs.
         # It replaces "device = torch.device('cuda')"
-        self.accelerator = Accelerator()
+        self.accelerator = Accelerator(
+            mixed_precision="fp16",
+            log_with="wandb"  # <--- NEW
+        )
+        self.config = {
+            'lr' : learning_rate,
+            'epochs': num_epochs,
+            'batch_size': batch_size,  # Very important to track
+            'd_model': d_model,  # Model size
+            'n_layers': num_layers,  # Depth
+            'dropout': drop_out_rate  # Regularization
+        }
         self.device = self.accelerator.device 
         
         # Only print logs on the main process (GPU 0)
@@ -75,6 +87,10 @@ class Manager():
 
         # 4. PREPARE DATALOADERS
         if is_train:
+            self.accelerator.init_trackers(
+                project_name = "nmt_project",
+                config = self.config,
+            )
             self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
             
             # Get the standard PyTorch dataloader
@@ -96,6 +112,7 @@ class Manager():
         for epoch in range(1, epochs + 1):
             self.model.train()
             train_losses = []
+            global_step = 0  # Track total steps for clean graphs
 
             # Disable tqdm on non-main processes to avoid messy output
             progress_bar = tqdm(self.train_loader, disable=not self.accelerator.is_main_process)
@@ -120,7 +137,21 @@ class Manager():
                 self.optim.step()
                 self.optim.zero_grad()
 
-                train_losses.append(loss.item())
+                gathered_loss = self.accelerator.gather(loss).mean().item()
+                train_losses.append(gathered_loss)
+
+                # Log to W&B
+                self.accelerator.log(
+                    {
+                        "train_loss": gathered_loss,
+                        "epoch": epoch,
+                        "learning_rate": self.optim.param_groups[0]['lr']
+                    },
+                    step=global_step
+                )
+
+                global_step += 1
+                progress_bar.set_postfix(loss=gathered_loss)
 
             # 8. LOGGING & SAVING (Main Process Only)
             # We wait for all GPUs to finish the epoch before saving
