@@ -101,11 +101,13 @@ class MultiHeadAttentionLayer(nn.Module):
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
 
         # 2. Apply Mask
+        # NEW (FP16 Safe Code)
         if mask is not None:
-            # FIX: Do NOT unsqueeze here.
-            # We assume 'create_mask' in Manager already gave us the correct 4D shape.
-            # mask shape is likely (Batch, 1, 1, K_Len) or (Batch, 1, Q_Len, K_Len)
-            attn_scores = attn_scores.masked_fill(mask == 0, -1 * self.inf)
+            # 2. Get the lowest possible number for this specific datatype (FP16 or FP32)
+            min_val = torch.finfo(attn_scores.dtype).min
+
+            # 3. Apply mask
+            attn_scores = attn_scores.masked_fill(mask == 0, min_val)
 
         # 3. Softmax & Dropout
         attn_distribs = self.attn_softmax(attn_scores)
