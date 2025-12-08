@@ -95,13 +95,14 @@ class Manager():
             self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
             
             # Get the standard PyTorch dataloader
-            raw_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp)
+            train_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'train[:500000]')
+            valid_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'validation')
             
             # 5. THE MAGIC LINE: ACCELERATOR.PREPARE
             # This wraps the model in DDP, moves it to GPU, and 
             # splits the dataloader across GPUs automatically.
-            self.model, self.optim, self.train_loader = self.accelerator.prepare(
-                self.model, self.optim, raw_loader
+            self.model, self.optim, self.train_loader, self.valid_loader = self.accelerator.prepare(
+                self.model, self.optim, train_loader, valid_loader
             )
 
     def train(self):
