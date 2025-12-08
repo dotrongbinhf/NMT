@@ -109,86 +109,89 @@ class Manager():
         if self.accelerator.is_main_process:
             print("Training starts.")
 
-        epochs = num_epochs
+        num_epochs = self.config.get('epochs', 10)
+
+        # 1. Initialize Global Step
         global_step = 0
-        for epoch in range(1, epochs + 1):
+        VALIDATION_FREQ = eval_step  # Validate every 500 steps
+
+        for epoch in range(1, num_epochs + 1):
             self.model.train()
             train_losses = []
-              # Track total steps for clean graphs
 
-            # Disable tqdm on non-main processes to avoid messy output
-            progress_bar = tqdm(self.train_loader, disable=not self.accelerator.is_main_process)
+            # Disable tqdm on non-main GPUs
+            progress_bar = tqdm(self.train_loader, desc=f"Epoch {epoch}", disable=not self.accelerator.is_main_process)
 
             for batch in progress_bar:
-                # 1. Unpack (Data is ALREADY on GPU thanks to Accelerator)
+                # --- FORWARD PASS ---
                 src_padded, tgt_in_padded, tgt_out_padded = batch
-
-                # 2. Create Masks (Uses the device of src_padded)
                 e_mask, d_mask = self.create_mask(src_padded, tgt_in_padded)
 
-                # 3. Forward Pass
                 output = self.model(src_padded, tgt_in_padded, e_mask, d_mask)
 
-                # ... Loss calculation ...
                 output_flat = output.view(-1, self.trg_vocab_size)
                 target_flat = tgt_out_padded.view(-1)
                 loss = self.criterion(output_flat, target_flat)
 
-                # 4. Backward (Use Accelerator)
+                # --- BACKWARD PASS ---
                 self.accelerator.backward(loss)
                 self.optim.step()
                 self.optim.zero_grad()
 
-                gathered_loss = self.accelerator.gather(loss).mean().item()
-                train_losses.append(gathered_loss)
+                # --- LOGGING ---
+                # Gather loss for accurate logging
+                current_loss = self.accelerator.gather(loss).mean().item()
+                train_losses.append(current_loss)
 
-                # Log to W&B
-                self.accelerator.log(
-                    {
-                        "train_loss": gathered_loss,
+                # Increment Step
+                global_step += 1
+                progress_bar.set_postfix(loss=current_loss, step=global_step)
+
+                # Log training loss to WandB every 10 steps (optional, to keep graphs smooth)
+                if global_step % 10 == 0:
+                    self.accelerator.log({
+                        "train_loss": current_loss,
                         "epoch": epoch,
                         "learning_rate": self.optim.param_groups[0]['lr']
-                    },
-                    step=global_step
-                )
+                    }, step=global_step)
 
-                global_step += 1
-                progress_bar.set_postfix(loss=gathered_loss)
+                # ============================================================
+                # VALIDATION CHECK (EVERY "eval_step" STEPS)
+                # ============================================================
+                if global_step % VALIDATION_FREQ == 0:
 
-            # 8. LOGGING & SAVING (Main Process Only)
-            # We wait for all GPUs to finish the epoch before saving
-            self.accelerator.wait_for_everyone()
+                    # A. Run Validation
+                    # (This function puts model in .eval() mode)
+                    val_loss, val_time = self.validation()
 
-            if global_step % 500 == 0:
-                val_loss, val_time = self.validation()
+                    if self.accelerator.is_main_process:
+                        print(f"\n[Step {global_step}] Val Loss: {val_loss:.4f} | Time: {val_time}")
 
-            if self.accelerator.is_main_process:
-                print(f"Epoch {epoch} | Val Loss: {val_loss:.4f} | Time: {val_time}")
+                        # B. Log to WandB
+                        self.accelerator.log({"val_loss": val_loss}, step=global_step)
 
-                # Log both Train and Val loss to WandB
-                # Note: 'train_loss' here is the mean of the epoch, or use the last batch
-                self.accelerator.log({
-                    "val_loss": val_loss,
-                    "epoch": epoch
-                })
+                        # C. Save Best Checkpoint
+                        if val_loss < self.best_loss:
+                            self.best_loss = val_loss
+                            print(f"New Best Val Loss! Saving checkpoint...")
 
-                # 3. Save Best Checkpoint (Based on Val Loss, not Train Loss!)
-                if val_loss < self.best_loss:
-                    self.best_loss = val_loss
-                    print(f"New Best Val Loss! Saving checkpoint...")
+                            unwrapped_model = self.accelerator.unwrap_model(self.model)
 
-                    # Unwrap before saving
-                    unwrapped_model = self.accelerator.unwrap_model(self.model)
+                            if not os.path.exists(ckpt_dir):
+                                os.makedirs(ckpt_dir)
 
-                    if not os.path.exists(ckpt_dir):
-                        os.makedirs(ckpt_dir)
+                            torch.save({
+                                'model_state_dict': unwrapped_model.state_dict(),
+                                'optim_state_dict': self.optim.state_dict(),
+                                'loss': self.best_loss,
+                                'step': global_step
+                            }, f"{ckpt_dir}/best_ckpt.tar")
 
-                    torch.save({
-                        'model_state_dict': unwrapped_model.state_dict(),
-                        'optim_state_dict': self.optim.state_dict(),
-                        'loss': self.best_loss,
-                        'epoch': epoch
-                    }, f"{ckpt_dir}/best_ckpt.tar")
+                    # D. CRITICAL: SWITCH BACK TO TRAIN MODE
+                    # If you forget this, training stops working correctly
+                    self.model.train()
+
+        self.accelerator.end_training()
 
     def validation(self):
         # Only print on main process
