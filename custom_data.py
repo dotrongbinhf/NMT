@@ -10,9 +10,9 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import torch
 
-def get_dataloader(dataset_name, src_sp, trg_sp, batch_size = batch_size):
+def get_dataloader(dataset_name, src_sp, trg_sp, batch_size = batch_size, split = 'train[:500000'):
     print(f"Loading {dataset_name}...")
-    dataset = load_dataset(dataset_name, split='train[:500000]')
+    dataset = load_dataset(dataset_name, split=split)
 
     # --- TOKENIZER FUNCTION ---
     def tokenize_pair(examples):
@@ -29,10 +29,13 @@ def get_dataloader(dataset_name, src_sp, trg_sp, batch_size = batch_size):
             src_texts = examples['en']
             tgt_texts = examples['vi']
 
+        max_len = seq_len
         # Tokenize Source
         for text in src_texts:
             # Source: [IDs] + [EOS]
             encoded = src_sp.EncodeAsIds(text)
+            if len(encoded) > max_len - 1:  # -1 for EOS
+                encoded = encoded[:max_len - 1]
             src_batch.append(encoded + [eos_id])
 
         # Tokenize Target
@@ -41,6 +44,8 @@ def get_dataloader(dataset_name, src_sp, trg_sp, batch_size = batch_size):
             # Input: [BOS] + [IDs]
             tgt_input_batch.append([bos_id] + encoded)
             # Label: [IDs] + [EOS]
+            if len(encoded) > max_len - 2:  # -2 for BOS/EOS
+                encoded = encoded[:max_len - 2]
             tgt_label_batch.append(encoded + [eos_id])
 
         return {

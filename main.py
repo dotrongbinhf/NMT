@@ -159,65 +159,85 @@ class Manager():
             self.accelerator.wait_for_everyone()
             
             # Calculate mean loss across all GPUs for accurate reporting
-            mean_loss = np.mean(train_losses)
-            
-            if self.accelerator.is_main_process:
-                print(f"Epoch {epoch} | Loss: {mean_loss:.4f}")
+            val_loss, val_time = self.validation()
 
-                if mean_loss < self.best_loss:
-                    self.best_loss = mean_loss
+            if self.accelerator.is_main_process:
+                print(f"Epoch {epoch} | Val Loss: {val_loss:.4f} | Time: {val_time}")
+
+                # Log both Train and Val loss to WandB
+                # Note: 'train_loss' here is the mean of the epoch, or use the last batch
+                self.accelerator.log({
+                    "val_loss": val_loss,
+                    "epoch": epoch
+                })
+
+                # 3. Save Best Checkpoint (Based on Val Loss, not Train Loss!)
+                if val_loss < self.best_loss:
+                    self.best_loss = val_loss
+                    print(f"New Best Val Loss! Saving checkpoint...")
+
+                    # Unwrap before saving
+                    unwrapped_model = self.accelerator.unwrap_model(self.model)
+
                     if not os.path.exists(ckpt_dir):
                         os.makedirs(ckpt_dir)
-                    
-                    # 9. UNWRAP MODEL BEFORE SAVING
-                    # DDP wraps model in 'module.', we need to unwrap it 
-                    # so we can load it easily later on a CPU or single GPU.
-                    unwrapped_model = self.accelerator.unwrap_model(self.model)
-                    
+
                     torch.save({
                         'model_state_dict': unwrapped_model.state_dict(),
                         'optim_state_dict': self.optim.state_dict(),
-                        'loss': self.best_loss
+                        'loss': self.best_loss,
+                        'epoch': epoch
                     }, f"{ckpt_dir}/best_ckpt.tar")
-                    print("Checkpoint Saved.")
-        
+
     def validation(self):
-        print("Validation processing...")
+        # Only print on main process
+        if self.accelerator.is_main_process:
+            print("Validation processing...")
+
         self.model.eval()
-        
         valid_losses = []
         start_time = datetime.datetime.now()
 
         with torch.no_grad():
-            for i, batch in tqdm(enumerate(self.valid_loader)):
-                src_input, trg_input, trg_output = batch
-                src_input, trg_input, trg_output = src_input.to(device), trg_input.to(device), trg_output.to(device)
+            # Disable tqdm on non-main GPUs to keep output clean
+            for batch in tqdm(self.valid_loader, desc="Validating", disable=not self.accelerator.is_main_process):
+                # 1. Unpack & Move to Device
+                # (If valid_loader wasn't prepared by accelerator, we move manually)
+                src_padded, tgt_in_padded, tgt_out_padded = batch
+                src_padded = src_padded.to(self.device)
+                tgt_in_padded = tgt_in_padded.to(self.device)
+                tgt_out_padded = tgt_out_padded.to(self.device)
 
-                e_mask, d_mask = self.make_mask(src_input, trg_input)
+                # 2. Create Masks (The new 4D function)
+                e_mask, d_mask = self.create_mask(src_padded, tgt_in_padded)
 
-                output = self.model(src_input, trg_input, e_mask, d_mask) # (B, L, vocab_size)
+                # 3. Forward
+                output = self.model(src_padded, tgt_in_padded, e_mask, d_mask)
 
-                trg_output_shape = trg_output.shape
-                loss = self.criterion(
-                    output.view(-1, sp_vocab_size),
-                    trg_output.view(trg_output_shape[0] * trg_output_shape[1])
-                )
+                # 4. Compute Loss
+                output_flat = output.view(-1, self.trg_vocab_size)
+                target_flat = tgt_out_padded.view(-1)
+                loss = self.criterion(output_flat, target_flat)
 
-                valid_losses.append(loss.item())
+                # 5. Gather Loss from all GPUs (Crucial for Distributed Training)
+                # If we don't gather, we only see the loss from GPU 0
+                avg_loss = self.accelerator.gather(loss).mean().item()
+                valid_losses.append(avg_loss)
 
-                del src_input, trg_input, trg_output, e_mask, d_mask, output
-                torch.cuda.empty_cache()
-
+        # Time Calculation
         end_time = datetime.datetime.now()
         validation_time = end_time - start_time
+
+        # Format Time string
         seconds = validation_time.seconds
         hours = seconds // 3600
         minutes = (seconds % 3600) // 60
         seconds = seconds % 60
-        
+        time_str = f"{hours}h {minutes}m {seconds}s"
+
         mean_valid_loss = np.mean(valid_losses)
-        
-        return mean_valid_loss, f"{hours}hrs {minutes}mins {seconds}secs"
+
+        return mean_valid_loss, time_str
 
     def inference(self, input_sentence, method):
         self.model.eval()
