@@ -269,65 +269,123 @@ class Manager():
         decoded_output = self.trg_sp.decode_ids(decoded_output)
         
         return decoded_output
-    
+
     def beam_search(self, e_output, e_mask):
+        # 1. ANCHOR DEVICE (Crucial for Accelerate)
+        device = e_output.device
+
+        # 2. Use Log-Probabilities (NLL)
+        # PriorityQueue in Python pops the LOWEST value first.
+        # Since LogProbs are negative (0 is best, -inf is worst),
+        # we usually minimize Negative Log Likelihood (Positive numbers).
+        # Score 0.0 is perfect. Score 100.0 is bad.
         cur_queue = PriorityQueue()
-        for k in range(beam_size):
-            cur_queue.put(BeamNode(bos_id, -0.0, [bos_id]))
-        
-        finished_count = 0
-        
-        for pos in range(seq_len):
+
+        # Start with [BOS]
+        # (Score, Sequence) -> We store Score first for sorting
+        cur_queue.put(BeamNode(bos_id, 0.0, [bos_id]))
+
+        finished_nodes = []
+
+        # Max Length Loop
+        for pos in range(100):  # Don't rely on global seq_len, set a reasonable inference limit
             new_queue = PriorityQueue()
-            for k in range(beam_size):
+
+            # If queue is empty (all beams finished), break
+            if cur_queue.empty():
+                break
+
+            # Process the top K beams
+            # Note: A true vectorized beam search processes all K in one batch.
+            # This loop version is slower but easier to understand.
+            for k in range(min(beam_size, cur_queue.qsize())):
                 node = cur_queue.get()
+
                 if node.is_finished:
                     new_queue.put(node)
-                else:
-                    trg_input = torch.LongTensor(node.decoded + [pad_id] * (seq_len - len(node.decoded))).to(device) # (L)
-                    d_mask = (trg_input.unsqueeze(0) != pad_id).unsqueeze(1).to(device) # (1, 1, L)
-                    nopeak_mask = torch.ones([1, seq_len, seq_len], dtype=torch.bool).to(device)
-                    nopeak_mask = torch.tril(nopeak_mask) # (1, L, L) to triangular shape
-                    d_mask = d_mask & nopeak_mask # (1, L, L) padding false
-                    
-                    trg_embedded = self.model.trg_embedding(trg_input.unsqueeze(0))
-                    trg_positional_encoded = self.model.positional_encoder(trg_embedded)
-                    decoder_output = self.model.decoder(
-                        trg_positional_encoded,
-                        e_output,
-                        e_mask,
-                        d_mask
-                    ) # (1, L, d_model)
+                    continue
 
-                    output = self.model.softmax(
-                        self.model.output_linear(decoder_output)
-                    ) # (1, L, trg_vocab_size)
-                    
-                    output = torch.topk(output[0][pos], dim=-1, k=beam_size)
-                    last_word_ids = output.indices.tolist() # (k)
-                    last_word_prob = output.values.tolist() # (k)
-                    
-                    for i, idx in enumerate(last_word_ids):
-                        new_node = BeamNode(idx, -(-node.prob + last_word_prob[i]), node.decoded + [idx])
-                        if idx == eos_id:
-                            new_node.prob = new_node.prob / float(len(new_node.decoded))
-                            new_node.is_finished = True
-                            finished_count += 1
+                # --- DYNAMIC TENSOR CREATION ---
+                # 1. Create Tensor on the correct device (No Padding needed for inference!)
+                trg_input = torch.LongTensor([node.decoded]).to(device)  # Shape (1, Curr_Len)
+
+                # 2. Create Masks Dynamically
+                # We use the helper logic directly here for speed
+                trg_len = trg_input.size(1)
+                d_pad_mask = (trg_input != self.pad_id).unsqueeze(1)  # (1, 1, L)
+                nopeak_mask = torch.tril(torch.ones((trg_len, trg_len), device=device)).bool()
+                d_mask = d_pad_mask & nopeak_mask.unsqueeze(0)  # (1, 1, L, L)
+
+                # 3. Model Forward
+                # Embed & PE
+                trg_emb = self.model.trg_embedding(trg_input)
+                trg_emb = self.model.positional_encoder(trg_emb)
+
+                # Decoder
+                decoder_output = self.model.decoder(
+                    trg_emb,
+                    e_output,
+                    e_mask,
+                    d_mask
+                )
+
+                # 4. Get Log Softmax (CRITICAL CHANGE)
+                # We take the last token output
+                logits = self.model.output_linear(decoder_output[:, -1, :])  # (1, Vocab)
+                log_probs = self.model.log_softmax(logits)  # (1, Vocab)
+
+                # 5. Top K
+                # We want the highest log_probs (closest to 0)
+                # torch.topk returns values (largest first).
+                topk_output = torch.topk(log_probs, k=beam_size, dim=-1)
+
+                last_word_ids = topk_output.indices[0].tolist()
+                last_word_log_probs = topk_output.values[0].tolist()
+
+                for i, idx in enumerate(last_word_ids):
+                    # NLL Score = Previous Score + (-1 * current_log_prob)
+                    # We minimize the score.
+                    score_increment = -last_word_log_probs[i]
+                    new_score = node.prob + score_increment
+
+                    new_decoded = node.decoded + [idx]
+                    new_node = BeamNode(idx, new_score, new_decoded)
+
+                    if idx == eos_id:
+                        # Length Penalty (Normalize score by length)
+                        # Otherwise short sentences are always preferred
+                        new_node.prob = new_node.prob / len(new_decoded)
+                        new_node.is_finished = True
+                        finished_nodes.append(new_node)
+                    else:
                         new_queue.put(new_node)
-            
-            cur_queue = copy.deepcopy(new_queue)
-            
-            if finished_count == beam_size:
+
+            # Keep only top Beam Size nodes for next round
+            # PriorityQueue doesn't slice, so we manually transfer
+            cur_queue = PriorityQueue()
+            for _ in range(beam_size):
+                if new_queue.empty(): break
+                cur_queue.put(new_queue.get())
+
+            # If we found enough finished sentences, we can stop early
+            if len(finished_nodes) >= beam_size:
                 break
-        
-        decoded_output = cur_queue.get().decoded
-        
-        if decoded_output[-1] == eos_id:
-            decoded_output = decoded_output[1:-1]
+
+        # Select best
+        if len(finished_nodes) > 0:
+            # Sort by score (lowest NLL is best)
+            finished_nodes.sort(key=lambda x: x.prob)
+            best_node = finished_nodes[0]
         else:
-            decoded_output = decoded_output[1:]
-            
-        return self.trg_sp.decode_ids(decoded_output)
+            best_node = cur_queue.get()  # Get current best incomplete
+
+        decoded_output = best_node.decoded
+
+        # Strip special tokens
+        if decoded_output[0] == bos_id: decoded_output = decoded_output[1:]
+        if decoded_output and decoded_output[-1] == eos_id: decoded_output = decoded_output[:-1]
+
+        return self.trg_sp.DecodeIds(decoded_output)
 
     def create_mask(self, src, tgt):
         # src: (Batch, Src_Len)
