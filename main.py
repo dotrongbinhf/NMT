@@ -110,11 +110,11 @@ class Manager():
             print("Training starts.")
 
         epochs = num_epochs
-
+        global_step = 0
         for epoch in range(1, epochs + 1):
             self.model.train()
             train_losses = []
-            global_step = 0  # Track total steps for clean graphs
+              # Track total steps for clean graphs
 
             # Disable tqdm on non-main processes to avoid messy output
             progress_bar = tqdm(self.train_loader, disable=not self.accelerator.is_main_process)
