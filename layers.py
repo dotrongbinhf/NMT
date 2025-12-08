@@ -57,48 +57,62 @@ class MultiHeadAttentionLayer(nn.Module):
     def __init__(self):
         super().__init__()
         self.inf = 1e9
-        
-        #W^q, W^k, W^v : linear layers to project input to q, k, v
-        self.w_q = nn.Linear(d_model, d_model, bias = False)
-        self.w_k = nn.Linear(d_model, d_model, bias = False)
-        self.w_v = nn.Linear(d_model, d_model, bias = False)
 
-        self.attn_softmax = nn.Softmax(dim = -1)
+        # W^q, W^k, W^v
+        self.w_q = nn.Linear(d_model, d_model, bias=False)
+        self.w_k = nn.Linear(d_model, d_model, bias=False)
+        self.w_v = nn.Linear(d_model, d_model, bias=False)
+
+        self.attn_softmax = nn.Softmax(dim=-1)
         self.attn_dropout = nn.Dropout(drop_out_rate)
 
-        #w^o : linear layer to project concatenated output of all heads
-        self.w_o = nn.Linear(d_model, d_model, bias = False)
+        # W^o
+        self.w_o = nn.Linear(d_model, d_model, bias=False)
 
-    def forward(self, q, k, v, mask = None):
-        input_shape = q.shape # (batch_size, seq_len, d_model)
+    def forward(self, q, k, v, mask=None):
+        # 1. Define Shapes
+        batch_size = q.size(0)
 
-        q = self.w_q(q).view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
-        k = self.w_k(k).view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
-        v = self.w_v(v).view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
+        # Use -1 to infer sequence length dynamically (safe for cross-attention)
+        # Reshape: (B, Seq_Len, d_model) -> (B, Seq_Len, H, d_k)
+        q = self.w_q(q).view(batch_size, -1, num_heads, d_k)
+        k = self.w_k(k).view(batch_size, -1, num_heads, d_k)
+        v = self.w_v(v).view(batch_size, -1, num_heads, d_k)
 
-        #transpose to get dimensions (batch_size, num_heads, seq_len, d_k)
-        q = q.transpose(1, 2)  # (batch_size, num_heads, seq_len, d_k)
-        k = k.transpose(1, 2)  # (batch_size, num_heads , seq_len, d_k)
-        v = v.transpose(1, 2)  # (batch_size, num_heads, seq_len, d_k)
+        # 2. Transpose for Attention: (B, H, Seq_Len, d_k)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
 
-        attn_output = self.self_attention(q, k, v, mask = None)
-        #concatenate heads and put back to original shape
-        concat_output = attn_output.transpose(1, 2).contigous().view(input_shape[0], -1, d_model)   # (batch_size, seq_len, d_model)
-        output = self.w_o(concat_output)  # (batch_size, seq_len, d_model)
+        # 3. Pass the mask correctly! (FIXED HERE)
+        attn_output = self.self_attention(q, k, v, mask=mask)
 
+        # 4. Concatenate and Project
+        # (B, H, Len, d_k) -> (B, Len, H, d_k) -> (B, Len, d_model)
+        concat_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, d_model)
+
+        output = self.w_o(concat_output)
         return output
 
-    def self_attention(self, q, k, v, mask = None):
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k) # (batch_size, num_heads, seq_len, seq_len) 
-    
-        if mask is not None:
-            mask = mask.unsqueeze(1)  # (batch_size, 1, 1, seq_len)
-            attn_scores = attn_scores.masked_fill(mask == 0, -1 * self.inf) # Apply the mask
+    def self_attention(self, q, k, v, mask=None):
+        # q, k, v are (Batch, Head, Len, d_k)
 
-        attn_distribs = self.attn_softmax(attn_scores) # (batch_size, num_heads, seq_len, seq_len)
+        # 1. Calculate Scores: (Batch, Head, Q_Len, K_Len)
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
+
+        # 2. Apply Mask
+        if mask is not None:
+            # FIX: Do NOT unsqueeze here.
+            # We assume 'create_mask' in Manager already gave us the correct 4D shape.
+            # mask shape is likely (Batch, 1, 1, K_Len) or (Batch, 1, Q_Len, K_Len)
+            attn_scores = attn_scores.masked_fill(mask == 0, -1 * self.inf)
+
+        # 3. Softmax & Dropout
+        attn_distribs = self.attn_softmax(attn_scores)
         attn_distribs = self.attn_dropout(attn_distribs)
 
-        attn_output = torch.matmul(attn_distribs, v)  # (batch_size, num_heads, seq_len, d_k)
+        # 4. Context Vector
+        attn_output = torch.matmul(attn_distribs, v)
         return attn_output
 
 
