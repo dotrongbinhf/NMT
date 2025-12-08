@@ -48,6 +48,7 @@ class Manager():
         self.trg_sp = spm.SentencePieceProcessor()
         self.trg_sp.Load(f"{SP_DIR}/{trg_model_prefix}.model")
         self.dataset_name = DATASET_NAME
+        #hi
         
         self.src_vocab_size = self.src_sp.GetPieceSize()
         self.trg_vocab_size = self.trg_sp.GetPieceSize()
