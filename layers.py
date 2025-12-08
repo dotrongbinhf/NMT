@@ -72,9 +72,9 @@ class MultiHeadAttentionLayer(nn.Module):
     def forward(self, q, k, v, mask = None):
         input_shape = q.shape # (batch_size, seq_len, d_model)
 
-        q = self.w_q.view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
-        k = self.w_k.view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
-        v = self.w_v.view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
+        q = self.w_q(q).view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
+        k = self.w_k(k).view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
+        v = self.w_v(v).view(input_shape[0], -1, num_heads, d_k) # (batch_size, seq_len, num_heads, d_k)
 
         #transpose to get dimensions (batch_size, num_heads, seq_len, d_k)
         q = q.transpose(1, 2)  # (batch_size, num_heads, seq_len, d_k)
