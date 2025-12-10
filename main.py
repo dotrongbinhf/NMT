@@ -100,7 +100,7 @@ class Manager():
             # --- LOADING LOGIC ---
             if os.path.exists(ckpt_path):
                 # Map location 'cpu' is safest to avoid GPU OOM on load
-                checkpoint = torch.load(ckpt_path, map_location='cpu')
+                checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only = False)
 
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 self.optim.load_state_dict(checkpoint['optim_state_dict'])
