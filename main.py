@@ -325,7 +325,7 @@ class Manager():
             elif method == 'beam':
                 # Pass self.trg_sp to beam search if needed inside,
                 # or ensure beam_search accesses self.trg_sp
-                result = self.beam_search(e_output, e_mask)
+                result = self.beam_search(e_output, e_mask, self.accelerator)
 
         if self.device.type == 'cuda':
             torch.cuda.synchronize()
