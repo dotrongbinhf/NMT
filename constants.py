@@ -36,7 +36,7 @@ d_ff = 2048 #feedforward inner-layer dimension
 d_k = d_model // num_heads 
 drop_out_rate = 0.1
 num_epochs = 5
-beam_size = 8
+beam_size = 3
 ckpt_dir = 'saved_model'
 eval_step = 1000
 #aha

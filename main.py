@@ -622,7 +622,7 @@ if __name__=='__main__':
             workers = 0
         )
 
-        manager.evaluate_bleu(test_loader, beam_size=4)
+        manager.evaluate_bleu(test_loader, beam_size=beam_size)
 
     else:
         print("Please specify mode argument either with 'train' or 'inference'.")
