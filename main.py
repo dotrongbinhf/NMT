@@ -377,6 +377,7 @@ class Manager():
                     # Note: We need to ensure inference() returns the STRING, not print it.
                     pred_text = self.inference(src_text, method='beam', verbose=False)
                     predictions.append(pred_text)
+                    #a
                     references.append(ref_text)
 
                     if i < 3 and j == 0:
