@@ -486,7 +486,7 @@ class Manager():
             # --- FORWARD PASS (Run 4 beams at once) ---
             # Note: If you implement KV Caching, this changes significantly.
             # For now, we assume standard full-forward pass.
-            with torch.cuda.amp.autocast(enabled=True):  # Enable FP16 for speed
+            with torch.cuda.amp.autocast('cuda', enabled=True):  # Enable FP16 for speed
                 trg_emb = model_engine.trg_embedding(trg_input)
                 decoder_output = model_engine.decoder(trg_emb, e_output, e_mask, d_mask)
                 logits = model_engine.output_linear(decoder_output[:, -1, :])
@@ -629,7 +629,8 @@ if __name__=='__main__':
             src_sp=manager.src_sp,
             trg_sp=manager.trg_sp,
             split='test',  # Or 'validation' if test doesn't exist
-            workers = 0
+            workers = 0,
+            batch_size = 1
         )
 
         manager.evaluate_bleu(test_loader, beam_size=beam_size)
