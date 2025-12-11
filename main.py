@@ -288,7 +288,7 @@ class Manager():
 
     def inference(self, input_sentence, method='beam', verbose=False):
         self.model.eval()
-        my_device = self.device
+        my_device = next(self.model.parameters()).device
         # 1. Encode Input
         input_ids = self.src_sp.EncodeAsIds(input_sentence)
 
