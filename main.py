@@ -309,7 +309,7 @@ class Manager():
             src_emb = self.model.src_embedding(src_tensor)
 
             # 2. Add Position Info
-            src_emb = self.model.positional_encoder(src_emb)
+            # src_emb = self.model.positional_encoder(src_emb)
 
             # 3. Pass to Encoder
             e_output = self.model.encoder(src_emb, e_mask)
@@ -337,7 +337,7 @@ class Manager():
 
 
     # Add this inside your Manager class
-    def evaluate_bleu(self, test_loader, beam_size=3):
+    def evaluate_bleu(self, test_loader, beam_size=beam_size):
         print(f"Starting BLEU evaluation with Beam Size {beam_size}...")
         self.model.eval()
 
@@ -352,20 +352,19 @@ class Manager():
 
                 # Unpack - we only need source for inference
                 src_padded, tgt_in_padded, tgt_out_padded = batch
-
                 # We iterate through the batch (because beam_search handles 1 item at a time)
                 # Note: This is slow but simple. Optimized beam search does batching.
                 for j in range(src_padded.size(0)):
 
                     src_ids = src_padded[j].tolist()
                     # Filter out pad_id
-                    src_ids = [x for x in src_ids if x != self.pad_id and x != self.eos_id]
+                    src_ids = [x for x in src_ids if x != pad_id and x != eos_id]
 
 
                     src_text = self.src_sp.DecodeIds(src_ids)
 
                     ref_ids = tgt_out_padded[j].tolist()
-                    ref_ids = [x for x in ref_ids if x != -100 and x != self.pad_id and x != self.eos_id]
+                    ref_ids = [x for x in ref_ids if x != -100 and x != pad_id and x != eos_id]
                     ref_text = self.trg_sp.DecodeIds(ref_ids)
 
 
@@ -433,57 +432,54 @@ class Manager():
         return decoded_output
 
     def beam_search(self, e_output, e_mask):
-        # 1. ANCHOR DEVICE (Crucial for Accelerate)
-        device = e_output.device
+        # 1. Setup Device & Constants
+        my_device = e_output.device
+        max_len = 100
 
-        # 2. Use Log-Probabilities (NLL)
-        # PriorityQueue in Python pops the LOWEST value first.
-        # Since LogProbs are negative (0 is best, -inf is worst),
-        # we usually minimize Negative Log Likelihood (Positive numbers).
-        # Score 0.0 is perfect. Score 100.0 is bad.
+        # 2. Initialize Queue
+        # Score 0.0 is perfect (0 cost).
         cur_queue = PriorityQueue()
-
-        # Start with [BOS]
-        # (Score, Sequence) -> We store Score first for sorting
         cur_queue.put(BeamNode(bos_id, 0.0, [bos_id]))
 
         finished_nodes = []
 
-        # Max Length Loop
-        for pos in range(100):  # Don't rely on global seq_len, set a reasonable inference limit
+        # 3. Beam Search Loop
+        for pos in range(max_len):
             new_queue = PriorityQueue()
 
-            # If queue is empty (all beams finished), break
+            # If all beams died (unlikely) or queue empty
             if cur_queue.empty():
                 break
 
-            # Process the top K beams
-            # Note: A true vectorized beam search processes all K in one batch.
-            # This loop version is slower but easier to understand.
-            for k in range(min(beam_size, cur_queue.qsize())):
+            # We take the current top K candidates
+            # (In a highly optimized version, we would batch these K candidates
+            # into a single tensor [K, Len], but looping is safer for debugging)
+
+            current_beam_width = min(beam_size, cur_queue.qsize())
+
+            for k in range(current_beam_width):
                 node = cur_queue.get()
 
-                if node.is_finished:
-                    new_queue.put(node)
-                    continue
+                # --- PREPARE INPUT ---
+                # Create tensor with Shape (1, Seq_Len)
+                # We explicitly add the Batch Dimension [1] using unsqueeze or list of lists
+                trg_input = torch.LongTensor([node.decoded]).to(my_device)
 
-                # --- DYNAMIC TENSOR CREATION ---
-                # 1. Create Tensor on the correct device (No Padding needed for inference!)
-                trg_input = torch.LongTensor([node.decoded]).to(device)  # Shape (1, Curr_Len)
-
-                # 2. Create Masks Dynamically
-                # We use the helper logic directly here for speed
+                # Create Masks
                 trg_len = trg_input.size(1)
-                d_pad_mask = (trg_input != self.pad_id).unsqueeze(1)  # (1, 1, L)
-                nopeak_mask = torch.tril(torch.ones((trg_len, trg_len), device=device)).bool()
-                d_mask = d_pad_mask & nopeak_mask.unsqueeze(0)  # (1, 1, L, L)
+                # (1, 1, 1, L) shape handling usually depends on your specific attention head implementation
+                # Assuming standard Transformer dimensions:
+                d_pad_mask = (trg_input != pad_id).unsqueeze(1)
+                nopeak_mask = torch.tril(torch.ones((trg_len, trg_len), device=my_device)).bool()
+                d_mask = d_pad_mask & nopeak_mask.unsqueeze(0)
 
-                # 3. Model Forward
-                # Embed & PE
+                # --- FORWARD PASS ---
+                # Ensure e_output matches the batch size of trg_input (1)
+                # If e_output is (1, Src_Len, Dim), it is fine.
+
                 trg_emb = self.model.trg_embedding(trg_input)
-                trg_emb = self.model.positional_encoder(trg_emb)
+                # trg_emb = self.model.positional_encoder(trg_emb)
 
-                # Decoder
                 decoder_output = self.model.decoder(
                     trg_emb,
                     e_output,
@@ -491,61 +487,70 @@ class Manager():
                     d_mask
                 )
 
-                # 4. Get Log Softmax (CRITICAL CHANGE)
-                # We take the last token output
-                logits = self.model.output_linear(decoder_output[:, -1, :])  # (1, Vocab)
-                log_probs = self.model.log_softmax(logits)  # (1, Vocab)
+                # --- CALCULATE SCORES ---
+                # Get logits for the LAST token only: Shape (1, Vocab)
+                logits = self.model.output_linear(decoder_output[:, -1, :])
+                log_probs = torch.log_softmax(logits, dim=-1)  # Shape (1, Vocab)
 
-                # 5. Top K
-                # We want the highest log_probs (closest to 0)
-                # torch.topk returns values (largest first).
-                topk_output = torch.topk(log_probs, k=beam_size, dim=-1)
+                # Get Top K for this specific node
+                # We need K candidates because some might be EOS
+                topk_vals, topk_ids = torch.topk(log_probs, k=beam_size, dim=-1)
 
-                last_word_ids = topk_output.indices[0].tolist()
-                last_word_log_probs = topk_output.values[0].tolist()
+                # .tolist() returns nested list [[val1, val2...]] because of batch dim 0
+                vals = topk_vals[0].tolist()
+                ids = topk_ids[0].tolist()
 
-                for i, idx in enumerate(last_word_ids):
-                    # NLL Score = Previous Score + (-1 * current_log_prob)
-                    # We minimize the score.
-                    score_increment = -last_word_log_probs[i]
-                    new_score = node.prob + score_increment
+                for i, word_idx in enumerate(ids):
+                    # NLL Score Calculation:
+                    # Current Score + (Negative of LogProb)
+                    # LogProb is negative (e.g. -0.5), so we add +0.5 to cost.
+                    step_cost = -vals[i]
+                    new_score = node.prob + step_cost
+                    new_decoded = node.decoded + [word_idx]
 
-                    new_decoded = node.decoded + [idx]
-                    new_node = BeamNode(idx, new_score, new_decoded)
+                    new_node = BeamNode(word_idx, new_score, new_decoded)
 
-                    if idx == eos_id:
-                        # Length Penalty (Normalize score by length)
-                        # Otherwise short sentences are always preferred
+                    if word_idx == eos_id:
+                        # Length Penalty: Normalize by length alpha (usually 0.6-1.0)
+                        # Simple average: / len
                         new_node.prob = new_node.prob / len(new_decoded)
                         new_node.is_finished = True
                         finished_nodes.append(new_node)
                     else:
                         new_queue.put(new_node)
 
-            # Keep only top Beam Size nodes for next round
-            # PriorityQueue doesn't slice, so we manually transfer
+            # 4. Prune Beam
+            # Refill cur_queue with ONLY the top 'beam_size' from new_queue
             cur_queue = PriorityQueue()
             for _ in range(beam_size):
-                if new_queue.empty(): break
+                if new_queue.empty():
+                    break
                 cur_queue.put(new_queue.get())
 
-            # If we found enough finished sentences, we can stop early
+            # Stop condition: If we have enough finished sentences
             if len(finished_nodes) >= beam_size:
                 break
 
-        # Select best
-        if len(finished_nodes) > 0:
-            # Sort by score (lowest NLL is best)
+        # 5. Final Selection
+        # If no nodes finished (reached max_len), take the best incomplete one
+        if len(finished_nodes) == 0:
+            if cur_queue.empty():
+                return None  # Should not happen
+            best_node = cur_queue.get()
+        else:
+            # Sort finished nodes by lowest score
             finished_nodes.sort(key=lambda x: x.prob)
             best_node = finished_nodes[0]
-        else:
-            best_node = cur_queue.get()  # Get current best incomplete
 
+        # 6. Post-processing
         decoded_output = best_node.decoded
 
-        # Strip special tokens
-        if decoded_output[0] == bos_id: decoded_output = decoded_output[1:]
-        if decoded_output and decoded_output[-1] == eos_id: decoded_output = decoded_output[:-1]
+        # Remove BOS
+        if decoded_output and decoded_output[0] == bos_id:
+            decoded_output = decoded_output[1:]
+        # Remove EOS
+        if decoded_output and decoded_output[-1] == eos_id:
+            decoded_output = decoded_output[:-1]
 
         return self.trg_sp.DecodeIds(decoded_output)
 
@@ -597,8 +602,8 @@ if __name__=='__main__':
         manager.inference(args.input, args.decode)
     elif args.mode == 'evaluate':
         # Load the best checkpoint
-        assert args.ckpt is not None, "Provide a checkpoint!"
-        manager = Manager(is_train=False, ckpt_name=args.ckpt)
+        assert args.ckpt_name is not None, "Provide a checkpoint!"
+        manager = Manager(is_train=False, ckpt_name=args.ckpt_name)
 
         # We need a loader. Let's use validation or a dedicated test set
         test_loader = get_dataloader(
@@ -608,7 +613,7 @@ if __name__=='__main__':
             split='test'  # Or 'validation' if test doesn't exist
         )
 
-        manager.evaluate_bleu(test_loader, beam_size=3)
+        manager.evaluate_bleu(test_loader, beam_size=4)
 
     else:
         print("Please specify mode argument either with 'train' or 'inference'.")

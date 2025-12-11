@@ -28,26 +28,23 @@ class BeamNode():
     
     def print_spec(self):
         print(f"ID: {self} || cur_idx: {self.cur_idx} || prob: {self.prob} || decoded: {self.decoded}")
-    
+
 
 class PriorityQueue():
     def __init__(self):
         self.queue = []
-        
+
     def put(self, obj):
+        # FIX: Remove the negative sign.
+        # We want a Min-Heap (pop the lowest score/cost first)
         heapq.heappush(self.queue, (obj.prob, obj))
-        
+
     def get(self):
         return heapq.heappop(self.queue)[1]
-    
+
     def qsize(self):
         return len(self.queue)
-    
-    def print_scores(self):
-        scores = [t[0] for t in self.queue]
-        print(scores)
-        
-    def print_objs(self):
-        objs = [t[1] for t in self.queue]
-        print(objs)
+
+    def empty(self):
+        return len(self.queue) == 0
     
