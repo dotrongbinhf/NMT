@@ -44,6 +44,8 @@ class Manager():
             mixed_precision="fp16",
             log_with="wandb"  # <--- NEW
         )
+
+        self.max_len = max_len
         self.config = {
             'lr' : learning_rate,
             'epochs': num_epochs,
@@ -286,19 +288,22 @@ class Manager():
 
     def inference(self, input_sentence, method='beam', verbose=True):
         self.model.eval()
-
+        my_device = next(self.model.parameters()).device
         # 1. Encode Input
         input_ids = self.src_sp.EncodeAsIds(input_sentence)
 
         # Safety Truncation (Avoids Positional Encoding Crash on huge inputs)
-        if len(input_ids) > 256:
-            input_ids = input_ids[:256]
+        max_length = getattr(self, 'max_len', 256)  # Fallback to 256 if not found
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
 
-        src_tensor = torch.LongTensor(input_ids).unsqueeze(0).to(self.device)  # (1, L)
+        src_tensor = torch.LongTensor(input_ids).unsqueeze(0).to(my_device)  # (1, L)
 
         # 2. Create Mask
         e_mask = (src_tensor != self.pad_id).unsqueeze(1).unsqueeze(2)
 
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize()
         start_time = datetime.datetime.now()
 
         if verbose:
@@ -322,15 +327,15 @@ class Manager():
                 # or ensure beam_search accesses self.trg_sp
                 result = self.beam_search(e_output, e_mask)
 
+        if self.device.type == 'cuda':
+            torch.cuda.synchronize()
         end_time = datetime.datetime.now()
 
         if verbose:
             total_inference_time = end_time - start_time
-            seconds = total_inference_time.seconds
-            minutes = seconds // 60
-            seconds = seconds % 60
+            # Use total_seconds() for cleaner math
             print(f"Result: {result}")
-            print(f"Time: {minutes}m {seconds}s")
+            print(f"Time: {total_inference_time.total_seconds():.4f}s")
 
         # CRITICAL: You must return the string!
         return result

@@ -157,7 +157,7 @@ class LayerNormalization(nn.Module):
 
 #1st
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, max_seq_len=5000):
+    def __init__(self, dim, max_seq_len=max_len):
         super().__init__()
         self.dim = dim
 
