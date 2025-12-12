@@ -54,7 +54,7 @@ class DecoderLayer(nn.Module):
 
 #4th
 class MultiHeadAttentionLayer(nn.Module):
-    def __init__(self, use_rope = True):
+    def __init__(self, use_rope = USE_ROPE):
         super().__init__()
         self.inf = 1e9
 
