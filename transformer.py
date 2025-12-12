@@ -1,6 +1,7 @@
 from torch import nn
 from constants import *
 from layers import *
+import constants
 
 import torch
 
@@ -13,7 +14,7 @@ class Transformer(nn.Module):
         self.src_embedding = nn.Embedding(self.src_vocab_size, d_model)
         self.trg_embedding = nn.Embedding(self.trg_vocab_size, d_model)
 
-        if not USE_ROPE:
+        if not constants.USE_ROPE:
             self.positional_encoding = PositionalEncoder(d_model = d_model, max_len = 5000)
         self.encoder = Encoder()
         self.decoder = Decoder()
@@ -24,7 +25,7 @@ class Transformer(nn.Module):
         src_seq = self.src_embedding(src_seq) # (B, seq_len, d_model)
         trg_seq = self.trg_embedding(trg_seq) # (B, seq_len, d_model)
     #yra
-        if not USE_ROPE:
+        if not constants.USE_ROPE:
             src_seq = self.positional_encoding(src_seq) # (B, seq_len, d_model)
             trg_seq = self.positional_encoding(trg_seq) # (B, seq_len, d_model)
 

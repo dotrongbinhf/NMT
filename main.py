@@ -600,15 +600,25 @@ class Manager():
 
 
 if __name__=='__main__':
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ('yes', 'true', 't', 'y', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, help="train or inference?")
     parser.add_argument('--ckpt_name', required=False, help="best checkpoint file")
     parser.add_argument('--input', type=str, required=False, help="input sentence when inferencing")
     parser.add_argument('--decode', type=str, required=True, default="greedy", help="greedy or beam?")
     parser.add_argument('--dataset_name', type=str, required=False, help="path to config file")
-    parser.add_argument('--use_rope', type=bool, default = USE_ROPE, required=True, help="use rope or pe")
+    parser.add_argument('--use_rope', type=str2bool, default = USE_ROPE, required=True, help="use rope or pe")
     args = parser.parse_args()
     constants.USE_ROPE = args.use_rope
+    print(f"Global Rope Setting Updated to: {constants.USE_ROPE}")
 
     if args.mode == 'train':
         if args.ckpt_name is not None:
