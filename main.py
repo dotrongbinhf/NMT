@@ -1,6 +1,6 @@
 from tqdm import tqdm
 
-import constants
+
 from constants import *
 from custom_data import *
 from transformer import *
@@ -11,6 +11,7 @@ from custom_data import get_dataloader
 from transformers import get_scheduler
 
 import wandb
+import constants
 import torch
 import sys, os
 import numpy as np
@@ -37,7 +38,7 @@ import sacrebleu
 #Preprocess: Unigram; Vocab-size: 32000
 #Training phase: 2xT4 GPU + Thoi gian train/epoch
 class Manager():    
-    def __init__(self, is_train=True, ckpt_name=None, use_rope = USE_ROPE):
+    def __init__(self, is_train=True, ckpt_name=None, use_rope = constants.USE_ROPE):
         
         # 1. INITIALIZE ACCELERATOR
         # This automatically detects if you have 1 GPU, 4 GPUs, or TPUs.
@@ -599,16 +600,16 @@ class Manager():
         return src_mask, tgt_mask
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 if __name__=='__main__':
-    def str2bool(v):
-        if isinstance(v, bool):
-            return v
-        if v.lower() in ('yes', 'true', 't', 'y', '1'):
-            return True
-        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-            return False
-        else:
-            raise argparse.ArgumentTypeError('Boolean value expected.')
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, help="train or inference?")
     parser.add_argument('--ckpt_name', required=False, help="best checkpoint file")
