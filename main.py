@@ -645,7 +645,7 @@ if __name__=='__main__':
             dataset_name=DATASET_NAME,
             src_sp=manager.src_sp,
             trg_sp=manager.trg_sp,
-            split='test[:700]',  # Or 'validation' if test doesn't exist
+            split='test[:500]',  # Or 'validation' if test doesn't exist
             workers = 0,
             my_batch_size = 1
         )
