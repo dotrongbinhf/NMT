@@ -39,4 +39,5 @@ num_epochs = 10
 beam_size = 3
 ckpt_dir = 'saved_model'
 eval_step = 1000
+USE_ROPE = True
 #aha

@@ -9,7 +9,7 @@ class EncoderLayer(nn.Module):
     def __init__(self):
         super().__init__()
         self.layernorm1 = LayerNormalization()
-        self.mha = MultiHeadAttentionLayer(use_rope=False)
+        self.mha = MultiHeadAttentionLayer(use_rope=USE_ROPE)
         self.dropout1 = nn.Dropout(drop_out_rate)
 
         self.layernorm2 = LayerNormalization()
@@ -33,7 +33,7 @@ class DecoderLayer(nn.Module):
         self.dropout1 = nn.Dropout(drop_out_rate)
 
         self.layernorm2 = LayerNormalization()
-        self.mha = MultiHeadAttentionLayer(use_rope=False)
+        self.mha = MultiHeadAttentionLayer(use_rope=USE_ROPE)
         self.dropout2 = nn.Dropout(drop_out_rate)
 
         self.layernorm3 = LayerNormalization()
