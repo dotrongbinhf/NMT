@@ -23,7 +23,7 @@ class Transformer(nn.Module):
     def forward(self, src_seq, trg_seq, enc_mask=None, dec_mask=None):
         src_seq = self.src_embedding(src_seq) # (B, seq_len, d_model)
         trg_seq = self.trg_embedding(trg_seq) # (B, seq_len, d_model)
-
+    #yra
         if not USE_ROPE:
             src_seq = self.positional_encoding(src_seq) # (B, seq_len, d_model)
             trg_seq = self.positional_encoding(trg_seq) # (B, seq_len, d_model)
