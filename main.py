@@ -38,7 +38,7 @@ import sacrebleu
 #Preprocess: Unigram; Vocab-size: 32000
 #Training phase: 2xT4 GPU + Thoi gian train/epoch
 class Manager():    
-    def __init__(self, is_train=True, ckpt_name=None, use_rope = constants.USE_ROPE):
+    def __init__(self, is_train=True, ckpt_name=None):
         
         # 1. INITIALIZE ACCELERATOR
         # This automatically detects if you have 1 GPU, 4 GPUs, or TPUs.
@@ -48,7 +48,6 @@ class Manager():
             log_with="wandb"  # <--- NEW
         )
 
-        self.use_rope = use_rope
         self.max_len = max_len
         self.config = {
             'lr' : learning_rate,
@@ -317,7 +316,7 @@ class Manager():
             # 1. Embed
             src_emb = self.model.src_embedding(src_tensor)
 
-            if not self.use_rope:
+            if not constants.USE_ROPE:
                 src_emb = self.model.positional_encoding(src_emb)
 
             # 3. Pass to Encoder
@@ -492,7 +491,7 @@ class Manager():
             # For now, we assume standard full-forward pass.
             with torch.amp.autocast('cuda', enabled=True):  # Enable FP16 for speed
                 trg_emb = model_engine.trg_embedding(trg_input)
-                if not self.use_rope:
+                if not constants.USE_ROPE:
                     trg_emb = model_engine.positional_encoding(trg_emb)
                 decoder_output = model_engine.decoder(trg_emb, e_output, e_mask, d_mask)
                 logits = model_engine.output_linear(decoder_output[:, -1, :])
@@ -623,7 +622,7 @@ if __name__=='__main__':
 
     if args.mode == 'train':
         if args.ckpt_name is not None:
-            manager = Manager(is_train=True, ckpt_name=args.ckpt_name, use_rope=args.use_rope)
+            manager = Manager(is_train=True, ckpt_name=args.ckpt_name)
         else:
             manager = Manager(is_train=True)
 
@@ -633,12 +632,12 @@ if __name__=='__main__':
         assert args.input is not None, "Please specify the input sentence to translate."
         assert args.decode == 'greedy' or args.decode =='beam', "Please specify correct decoding method, either 'greedy' or 'beam'."
        
-        manager = Manager(is_train=False, ckpt_name=args.ckpt_name, use_rope=args.use_rope)
+        manager = Manager(is_train=False, ckpt_name=args.ckpt_name)
         manager.inference(args.input, args.decode)
     elif args.mode == 'evaluate':
         # Load the best checkpoint
         assert args.ckpt_name is not None, "Provide a checkpoint!"
-        manager = Manager(is_train=False, ckpt_name=args.ckpt_name, use_rope=args.use_rope)
+        manager = Manager(is_train=False, ckpt_name=args.ckpt_name)
 
         # We need a loader. Let's use validation or a dedicated test set
         test_loader = get_dataloader(
