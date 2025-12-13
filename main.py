@@ -133,8 +133,7 @@ class Manager():
             valid_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'validation')
 
             num_update_steps_per_epoch = len(train_loader)
-            epochs = constants.num_epochs
-            max_train_steps = epochs * num_update_steps_per_epoch
+            max_train_steps = int(constants.num_epochs) * num_update_steps_per_epoch
 
             # Create the Scheduler
             self.lr_scheduler = get_scheduler(
@@ -491,7 +490,7 @@ class Manager():
             # For now, we assume standard full-forward pass.
             with torch.amp.autocast('cuda', enabled=True):  # Enable FP16 for speed
                 trg_emb = model_engine.trg_embedding(trg_input)
-                trg_emb = trg_emb * math.sqrt(d_model)
+                trg_emb = trg_emb * math.sqrt(model_engine.d_model)
                 # trg_emb = model_engine.positional_encoding(trg_emb)
                 decoder_output = model_engine.decoder(trg_emb, e_output, e_mask, d_mask)
                 logits = model_engine.output_linear(decoder_output[:, -1, :])
