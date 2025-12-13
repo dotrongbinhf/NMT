@@ -209,6 +209,7 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
+#333
 class PositionalEncoder(nn.Module):
     def __init__(self, d_model = d_model, max_len = 5000):
         # Pass d_model and max_len as args, don't rely on globals!
