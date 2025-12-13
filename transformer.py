@@ -26,8 +26,8 @@ class Transformer(nn.Module):
         # src_seq = self.positional_encoding(src_seq) # (B, seq_len, d_model)
         # trg_seq = self.positional_encoding(trg_seq) # (B, seq_len, d_model)
 
-        # src_seq = src_seq * math.sqrt(d_model)
-        # trg_seq = trg_seq * math.sqrt(d_model)
+        src_seq = src_seq * math.sqrt(d_model)
+        trg_seq = trg_seq * math.sqrt(d_model)
 
         src_enc_output = self.encoder(src_seq, enc_mask) # (B, seq_len, d_model)
         trg_dec_output = self.decoder(trg_seq, src_enc_output, enc_mask, dec_mask) # (B, seq_len, d_model)
