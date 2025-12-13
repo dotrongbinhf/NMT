@@ -38,6 +38,6 @@ drop_out_rate = 0.1
 num_epochs = 1
 beam_size = 3
 ckpt_dir = 'saved_model'
-eval_step = 1000
+eval_step = 50
 USE_ROPE = True
 #aha
