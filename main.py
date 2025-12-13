@@ -1,6 +1,6 @@
 from tqdm import tqdm
 
-
+import constants
 from constants import *
 from custom_data import *
 from transformer import *
@@ -605,10 +605,14 @@ if __name__=='__main__':
     parser.add_argument('--input', type=str, required=False, help="input sentence when inferencing")
     parser.add_argument('--decode', type=str, required=True, default="greedy", help="greedy or beam?")
     parser.add_argument('--dataset_name', type=str, required=False, help="path to config file")
+    parser.add_argument('--num_epochs', type=str, required=False, help="path to config file")
+
     # parser.add_argument('--use_rope', type=str2bool, default = USE_ROPE, required=True, help="use rope or pe")
     args = parser.parse_args()
     # constants.USE_ROPE = args.use_rope
     # print(f"Global Rope Setting Updated to: {constants.USE_ROPE}")
+    constants.num_epochs = args.num_epochs
+    print(f"Number of train epoch: {constants.num_epochs}")
 
     if args.mode == 'train':
         if args.ckpt_name is not None:
