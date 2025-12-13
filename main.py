@@ -372,7 +372,7 @@ class Manager():
                     ref_ids = [x for x in ref_ids if x != -100 and x != pad_id and x != eos_id]
                     ref_text = self.trg_sp.DecodeIds(ref_ids)
 
-
+            #hehe
 
                     # Note: We need to ensure inference() returns the STRING, not print it.
                     pred_text = self.inference(src_text, method='beam', verbose=False)
