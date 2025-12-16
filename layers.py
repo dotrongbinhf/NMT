@@ -1,8 +1,7 @@
-import torch
-import torch.nn as nn
-
-from constants import *
 import math
+import torch
+from torch import nn
+from constants import *
 
 #5th
 class EncoderLayer(nn.Module):
@@ -54,79 +53,46 @@ class DecoderLayer(nn.Module):
 
 #4th
 class MultiHeadAttentionLayer(nn.Module):
-    def __init__(self, use_rope = True):
+    def __init__(self, use_rope=True):
         super().__init__()
         self.inf = 1e9
-
-        # W^q, W^k, W^v
         self.w_q = nn.Linear(d_model, d_model, bias=False)
         self.w_k = nn.Linear(d_model, d_model, bias=False)
         self.w_v = nn.Linear(d_model, d_model, bias=False)
 
         self.use_rope = use_rope
-        if self.use_rope:
-            self.rotary_emb = RotaryEmbedding(d_k)
-        else:
-            self.rotary_emb = None
+        self.rope = RotaryEmbedding(dim=d_k, max_seq_len=max_len) if use_rope else None
 
         self.attn_softmax = nn.Softmax(dim=-1)
         self.attn_dropout = nn.Dropout(drop_out_rate)
-
-        # W^o
         self.w_o = nn.Linear(d_model, d_model, bias=False)
 
     def forward(self, q, k, v, mask=None):
-        #Define Shapes
-        batch_sizee = q.size(0)
+        B = q.size(0)
 
-        # Use -1 to infer sequence length dynamically (safe for cross-attention)
-        # Reshape: (B, Seq_Len, d_model) -> (B, Seq_Len, H, d_k)
-        q = self.w_q(q).view(batch_sizee, -1, num_heads, d_k)
-        k = self.w_k(k).view(batch_sizee, -1, num_heads, d_k)
-        v = self.w_v(v).view(batch_sizee, -1, num_heads, d_k)
+        q = self.w_q(q).view(B, -1, num_heads, d_k).transpose(1, 2)  # (B,H,Lq,D)
+        k = self.w_k(k).view(B, -1, num_heads, d_k).transpose(1, 2)  # (B,H,Lk,D)
+        v = self.w_v(v).view(B, -1, num_heads, d_k).transpose(1, 2)  # (B,H,Lk,D)
 
-        #Transpose for Attention: (B, H, Seq_Len, d_k)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
+        # Apply RoPE only when Lq == Lk (self-attn). Your cross-attn already uses use_rope=False.
         if self.use_rope:
-            seq_length = q.size(2)
-            # Get Cos/Sin for the current sequence length
-            cos, sin = self.rotary_emb(v, seq_len=seq_length)
-            # Apply rotation to Q and K
+            cos, sin = self.rope(q, seq_len=q.size(-2))
             q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
         attn_output = self.self_attention(q, k, v, mask=mask)
-
-
-        concat_output = attn_output.transpose(1, 2).contiguous().view(batch_sizee, -1, d_model)
-
-        output = self.w_o(concat_output)
-        return output
+        concat = attn_output.transpose(1, 2).contiguous().view(B, -1, d_model)
+        return self.w_o(concat)
 
     def self_attention(self, q, k, v, mask=None):
-        # q, k, v are (Batch, Head, Len, d_k)
-
-        # 1. Calculate Scores: (Batch, Head, Q_Len, K_Len)
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
 
-        # 2. Apply Mask
-        # NEW (FP16 Safe Code)
         if mask is not None:
-            # 2. Get the lowest possible number for this specific datatype (FP16 or FP32)
-            min_val = torch.finfo(attn_scores.dtype).min
+            # mask should broadcast to (B,1,Lq,Lk) or (B,H,Lq,Lk)
+            attn_scores = attn_scores.masked_fill(mask == 0, torch.finfo(attn_scores.dtype).min)
 
-            # 3. Apply mask
-            attn_scores = attn_scores.masked_fill(mask == 0, min_val)
-
-        # 3. Softmax & Dropout
-        attn_distribs = self.attn_softmax(attn_scores)
-        attn_distribs = self.attn_dropout(attn_distribs)
-
-        # 4. Context Vector
-        attn_output = torch.matmul(attn_distribs, v)
-        return attn_output
+        attn = self.attn_softmax(attn_scores)
+        attn = self.attn_dropout(attn)
+        return torch.matmul(attn, v)
 
 #3rd
 class FeedForwardLayer(nn.Module):
@@ -161,57 +127,39 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         self.dim = dim
 
-        # 1. Calculate Frequencies (The "Theta")
-        # formula: 1 / (10000 ^ (2i / dim))
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        t = torch.arange(max_seq_len).float()
+        freqs = torch.einsum('i,j->ij', t, inv_freq)  # (max_seq_len, dim/2)
+        emb = torch.cat((freqs, freqs), dim=-1)       # (max_seq_len, dim)
 
-        # 2. Create Position indices
-        t = torch.arange(max_seq_len).type_as(inv_freq)
-
-        # 3. Outer Product to get angles
-        freqs = torch.einsum('i,j->ij', t, inv_freq)  # (seq_len, dim/2)
-
-        # 4. Concatenate to match dimension
-        # (seq_len, dim)
-        emb = torch.cat((freqs, freqs), dim=-1)
-
-        # 5. REGISTER BUFFER (Crucial for Accelerate/Multi-GPU)
-        # We register cos and sin as buffers so they move to GPU automatically
-        self.register_buffer('cos_cached', emb.cos()[None, None, :, :])
-        self.register_buffer('sin_cached', emb.sin()[None, None, :, :])
+        # store in fp32; will cast on use
+        self.register_buffer('cos_cached', emb.cos()[None, None, :, :], persistent=False)
+        self.register_buffer('sin_cached', emb.sin()[None, None, :, :], persistent=False)
 
     def forward(self, x, seq_len=None):
-        # x shape: (Batch, Heads, Seq_Len, Head_Dim)
-        if seq_len > self.cos_cached.shape[2]:
-            # Optional: Resize cache if input is longer than max_seq_len
-            # For now, we assume max_seq_len is big enough (5000)
-            pass
+        # x: (B, H, L, D)
+        if seq_len is None:
+            seq_len = x.size(-2)
 
-        return (
-            self.cos_cached[:, :, :seq_len, ...],
-            self.sin_cached[:, :, :seq_len, ...]
-        )
+        cos = self.cos_cached[..., :seq_len, :].to(device=x.device, dtype=x.dtype)
+        sin = self.sin_cached[..., :seq_len, :].to(device=x.device, dtype=x.dtype)
+        return cos, sin
 
-# Helper function to rotate vector
 def rotate_half(x):
-    # Split vector in half
     x1, x2 = x.chunk(2, dim=-1)
-    # Return [-x2, x1]
     return torch.cat((-x2, x1), dim=-1)
 
-
 def apply_rotary_pos_emb(q, k, cos, sin):
-    # q, k: (Batch, Heads, Seq_Len, Head_Dim)
-    # cos, sin: (1, 1, Seq_Len, Head_Dim)
-    q_float = q.float()
-    k_float = k.float()
-    cos = cos.float()
-    sin = sin.float()
+    # Keep fp16 stable: compute in fp32 then cast back
+    orig_dtype = q.dtype
+    q_f = q.float()
+    k_f = k.float()
+    cos_f = cos.float()
+    sin_f = sin.float()
 
-    # Formula: (x * cos) + (rotate_half(x) * sin)
-    q_embed = (q_float * cos) + (rotate_half(q_float) * sin)
-    k_embed = (k_float * cos) + (rotate_half(k_float) * sin)
-    return q_embed.type_as(q), k_embed.type_as(k)
+    q_embed = (q_f * cos_f) + (rotate_half(q_f) * sin_f)
+    k_embed = (k_f * cos_f) + (rotate_half(k_f) * sin_f)
+    return q_embed.to(orig_dtype), k_embed.to(orig_dtype)
 
 #333
 class PositionalEncoder(nn.Module):
