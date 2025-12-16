@@ -1,6 +1,8 @@
+import math
 from torch import nn
 from constants import *
 from layers import *
+import constants
 
 import torch
 
@@ -13,7 +15,11 @@ class Transformer(nn.Module):
         self.src_embedding = nn.Embedding(self.src_vocab_size, d_model)
         self.trg_embedding = nn.Embedding(self.trg_vocab_size, d_model)
 
-        # self.positional_encoding = PositionalEncoder(d_model = d_model, max_len = 5000)
+        # Use PE only when NOT using RoPE
+        self.positional_encoding = None
+        if not constants.USE_ROPE:
+            self.positional_encoding = PositionalEncoder(d_model=d_model, max_len=seq_len)
+
         self.encoder = Encoder()
         self.decoder = Decoder()
         self.output_linear = nn.Linear(d_model, trg_vocab_size)
@@ -23,18 +29,18 @@ class Transformer(nn.Module):
         src_seq = self.src_embedding(src_seq) # (B, seq_len, d_model)
         trg_seq = self.trg_embedding(trg_seq) # (B, seq_len, d_model)
 
-        # src_seq = self.positional_encoding(src_seq) # (B, seq_len, d_model)
-        # trg_seq = self.positional_encoding(trg_seq) # (B, seq_len, d_model)
-
         src_seq = src_seq * math.sqrt(d_model)
         trg_seq = trg_seq * math.sqrt(d_model)
 
-        src_enc_output = self.encoder(src_seq, enc_mask) # (B, seq_len, d_model)
-        trg_dec_output = self.decoder(trg_seq, src_enc_output, enc_mask, dec_mask) # (B, seq_len, d_model)
+        if self.positional_encoding is not None:
+            src_seq = self.positional_encoding(src_seq)
+            trg_seq = self.positional_encoding(trg_seq)
 
-        output = self.output_linear(trg_dec_output) # (B, seq_len, trg_vocab_size)
+        src_enc_output = self.encoder(src_seq, enc_mask)
+        trg_dec_output = self.decoder(trg_seq, src_enc_output, enc_mask, dec_mask)
 
-        return output # (B, seq_len, trg_vocab_size)
+        output = self.output_linear(trg_dec_output)
+        return output
 
 
 class Encoder(nn.Module):

@@ -1,4 +1,5 @@
 from tqdm import tqdm
+import math
 
 import constants
 from constants import *
@@ -291,55 +292,30 @@ class Manager():
     def inference(self, input_sentence, method='beam', verbose=False):
         self.model.eval()
         my_device = next(self.model.parameters()).device
-        # 1. Encode Input
-        input_ids = self.src_sp.EncodeAsIds(input_sentence)
 
-        # Safety Truncation (Avoids Positional Encoding Crash on huge inputs)
-        max_length = getattr(self, 'max_len', 256)  # Fallback to 256 if not found
+        input_ids = self.src_sp.EncodeAsIds(input_sentence)
+        max_length = getattr(self, 'max_len', 256)
         if len(input_ids) > max_length:
             input_ids = input_ids[:max_length]
 
-        src_tensor = torch.LongTensor(input_ids).unsqueeze(0).to(my_device)  # (1, L)
+        src_tensor = torch.LongTensor(input_ids).unsqueeze(0).to(my_device)
 
-        # 2. Create Mask
         e_mask = (src_tensor != pad_id).unsqueeze(1).unsqueeze(2)
 
-        if self.device.type == 'cuda':
-            torch.cuda.synchronize()
-        start_time = datetime.datetime.now()
-
-        if verbose:
-            print(f"Translating: '{input_sentence}'...")
-
         with torch.no_grad():
-            # 1. Embed
-            src_emb = self.model.src_embedding(src_tensor)
+            src_emb = self.model.src_embedding(src_tensor) * math.sqrt(d_model)
 
+            # Apply PE only if model has it (USE_ROPE=False)
+            if hasattr(self.model, "positional_encoding") and self.model.positional_encoding is not None:
+                src_emb = self.model.positional_encoding(src_emb)
 
-            # src_emb = self.model.positional_encoding(src_emb)
-
-            # 3. Pass to Encoder
             e_output = self.model.encoder(src_emb, e_mask)
 
-            # 4. Decode
             if method == 'greedy':
                 result = self.greedy_search(e_output, e_mask)
             elif method == 'beam':
-                # Pass self.trg_sp to beam search if needed inside,
-                # or ensure beam_search accesses self.trg_sp
                 result = self.beam_search(e_output, e_mask, self.accelerator)
 
-        if self.device.type == 'cuda':
-            torch.cuda.synchronize()
-        end_time = datetime.datetime.now()
-
-        if verbose:
-            total_inference_time = end_time - start_time
-            # Use total_seconds() for cleaner math
-            print(f"Result: {result}")
-            print(f"Time: {total_inference_time.total_seconds():.4f}s")
-
-        # CRITICAL: You must return the string!
         return result
 
 
@@ -599,6 +575,16 @@ class Manager():
         return src_mask, tgt_mask
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    v = v.lower()
+    if v in ("yes", "true", "t", "1", "y"):
+        return True
+    if v in ("no", "false", "f", "0", "n"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected (true/false).")
+
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', required=True, help="train or inference?")
@@ -608,10 +594,15 @@ if __name__=='__main__':
     parser.add_argument('--dataset_name', type=str, required=False, help="path to config file")
     parser.add_argument('--num_epochs', type=int, default=constants.num_epochs, required=False, help="path to config file")
 
-    # parser.add_argument('--use_rope', type=str2bool, default = USE_ROPE, required=True, help="use rope or pe")
+    # ADD THIS BACK
+    parser.add_argument('--use_rope', type=str2bool, default=constants.USE_ROPE, required=False, help="use RoPE (true/false)")
+
     args = parser.parse_args()
-    # constants.USE_ROPE = args.use_rope
-    # print(f"Global Rope Setting Updated to: {constants.USE_ROPE}")
+
+    # APPLY FLAG
+    constants.USE_ROPE = args.use_rope
+    print(f"USE_ROPE = {constants.USE_ROPE}")
+
     constants.num_epochs = args.num_epochs
     print(f"Number of train epoch: {constants.num_epochs}")
 
