@@ -105,14 +105,16 @@ class Manager():
             # --- LOADING LOGIC ---
             if os.path.exists(ckpt_path):
                 # Map location 'cpu' is safest to avoid GPU OOM on load
-                checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only = False)
-                #fuck
-                self.model.load_state_dict(checkpoint['model_state_dict'], strict = True)
+                checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+
+                incompatible = self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
                 self.optim.load_state_dict(checkpoint['optim_state_dict'])
                 self.best_loss = checkpoint.get('loss', sys.float_info.max)
 
                 if self.accelerator.is_main_process:
                     print(f"Loaded checkpoint from: {ckpt_path}")
+                    print("Missing keys:", incompatible.missing_keys)
+                    print("Unexpected keys:", incompatible.unexpected_keys)
         else:
             # CASE C: No checkpoint name provided -> Init from scratch
             if self.accelerator.is_main_process:
@@ -130,8 +132,8 @@ class Manager():
             self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
             
             # Get the standard PyTorch dataloader
-            train_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'train[:100]')
-            valid_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'validation[:20]')
+            train_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'train[:10]')
+            valid_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'validation[:10]')
 
             num_update_steps_per_epoch = len(train_loader)
             max_train_steps = int(constants.num_epochs) * num_update_steps_per_epoch
