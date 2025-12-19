@@ -132,7 +132,7 @@ class Manager():
             self.criterion = nn.CrossEntropyLoss(ignore_index=-100)
             
             # Get the standard PyTorch dataloader
-            train_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'train')
+            train_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'train[:500000]')
             valid_loader = get_dataloader(self.dataset_name, self.src_sp, self.trg_sp, split = 'validation')
 
             num_update_steps_per_epoch = len(train_loader)
@@ -632,7 +632,7 @@ if __name__=='__main__':
             dataset_name=DATASET_NAME,
             src_sp=manager.src_sp,
             trg_sp=manager.trg_sp,
-            split='train',  # Or 'validation' if test doesn't exist
+            split='test[:100]',  # Or 'validation' if test doesn't exist
             workers = 0,
             my_batch_size = 1
         )
