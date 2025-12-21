@@ -470,7 +470,12 @@ class Manager():
                 trg_emb = model_engine.trg_embedding(trg_input)
 
                 trg_emb = trg_emb * math.sqrt(d_model)
-                # trg_emb = model_engine.positional_encoding(trg_emb)
+                
+                # Apply PE only if model has it (USE_ROPE=False)
+                # When using RoPE, positional info is applied inside attention layers
+                if model_engine.positional_encoding is not None:
+                    trg_emb = model_engine.positional_encoding(trg_emb)
+                
                 decoder_output = model_engine.decoder(trg_emb, e_output, e_mask, d_mask)
                 logits = model_engine.output_linear(decoder_output[:, -1, :])
                 log_probs = torch.log_softmax(logits, dim=-1)  # (Beam, Vocab)

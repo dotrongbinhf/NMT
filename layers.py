@@ -124,16 +124,31 @@ class LayerNormalization(nn.Module):
 
 #1st
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, max_seq_len=max_len):
+    """
+    Rotary Position Embedding (RoPE) - Fixed implementation
+    Uses the standard LLaMA/GPT-NeoX style rotation (split-half method)
+    """
+    def __init__(self, dim, max_seq_len=max_len, base=10000):
         super().__init__()
         self.dim = dim
+        self.max_seq_len = max_seq_len
+        self.base = base
 
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        t = torch.arange(max_seq_len).float()
-        freqs = torch.einsum('i,j->ij', t, inv_freq)  # (max_seq_len, dim/2)
-        emb = torch.cat((freqs, freqs), dim=-1)       # (max_seq_len, dim)
+        # Compute inverse frequencies: theta_i = base^(-2i/dim)
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq, persistent=False)
 
-        # store in fp32; will cast on use
+        # Precompute cos and sin for all positions
+        self._set_cos_sin_cache(max_seq_len)
+
+    def _set_cos_sin_cache(self, seq_len):
+        t = torch.arange(seq_len, dtype=self.inv_freq.dtype)
+        # freqs shape: (seq_len, dim/2)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        # emb shape: (seq_len, dim) - duplicate for both halves
+        emb = torch.cat((freqs, freqs), dim=-1)
+        
+        # Shape: (1, 1, seq_len, dim) for broadcasting
         self.register_buffer('cos_cached', emb.cos()[None, None, :, :], persistent=False)
         self.register_buffer('sin_cached', emb.sin()[None, None, :, :], persistent=False)
 
@@ -141,17 +156,37 @@ class RotaryEmbedding(nn.Module):
         # x: (B, H, L, D)
         if seq_len is None:
             seq_len = x.size(-2)
+        
+        # Extend cache if needed
+        if seq_len > self.cos_cached.size(-2):
+            self._set_cos_sin_cache(seq_len)
 
         cos = self.cos_cached[..., :seq_len, :].to(device=x.device, dtype=x.dtype)
         sin = self.sin_cached[..., :seq_len, :].to(device=x.device, dtype=x.dtype)
         return cos, sin
 
+
 def rotate_half(x):
-    x1, x2 = x.chunk(2, dim=-1)
+    """
+    Rotates half the hidden dims of the input.
+    For input [..., d], splits into [..., d/2] and [..., d/2], 
+    then returns [-x2, x1] concatenated
+    """
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=-1)
 
+
 def apply_rotary_pos_emb(q, k, cos, sin):
-    # Keep fp16 stable: compute in fp32 then cast back
+    """
+    Apply rotary positional embeddings to q and k tensors.
+    
+    The rotation formula: 
+        q_rot = q * cos + rotate_half(q) * sin
+    
+    This encodes relative position information into the attention scores.
+    """
+    # Keep computation stable in fp32, then cast back
     orig_dtype = q.dtype
     q_f = q.float()
     k_f = k.float()
@@ -160,6 +195,7 @@ def apply_rotary_pos_emb(q, k, cos, sin):
 
     q_embed = (q_f * cos_f) + (rotate_half(q_f) * sin_f)
     k_embed = (k_f * cos_f) + (rotate_half(k_f) * sin_f)
+    
     return q_embed.to(orig_dtype), k_embed.to(orig_dtype)
 
 #333
@@ -193,9 +229,7 @@ class PositionalEncoder(nn.Module):
 
     def forward(self, x):
         # x shape: (Batch_Size, Seq_Len, d_model)
-
-        # Scale embedding (Standard Transformer practice)
-        x = x * math.sqrt(x.size(-1))
+        # Note: Scaling is already done in Transformer.forward(), don't scale again here!
 
         # Add PE
         # We slice self.pe to the length of the current input x
