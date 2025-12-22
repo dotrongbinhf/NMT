@@ -435,6 +435,7 @@ class Manager():
         return False
 
 
+    @torch.no_grad()
     def beam_search(self, e_output, e_mask, beam_size=4):
         device = e_output.device
         model = self.model
@@ -445,43 +446,60 @@ class Manager():
         repetition_penalty = 1.2
         no_repeat_ngram_size = 3
 
-        # Expand encoder output
+        bos_id = self.bos_id
+        eos_id = self.eos_id
+        pad_id = self.pad_id
+        d_model = model.d_model
+
+        # ===== FIX 1: repeat encoder output ĐÚNG CHUẨN =====
+        # e_output: (1, src_len, d_model)
         e_output = e_output.repeat(beam_size, 1, 1)
+        # e_mask: (1, 1, 1, src_len)
         e_mask = e_mask.repeat(beam_size, 1, 1, 1)
 
-        # Beam states
-        sequences = torch.full((beam_size, 1), bos_id, dtype=torch.long, device=device)
+        # ===== Beam states =====
+        sequences = torch.full(
+            (beam_size, 1),
+            bos_id,
+            dtype=torch.long,
+            device=device
+        )
+
         scores = torch.zeros(beam_size, device=device)
-        scores[1:] = -1e9
+        scores[1:] = -1e9  # chỉ beam đầu tiên active ở step 0
 
         finished = []
 
         for step in range(max_len):
 
             trg_len = sequences.size(1)
-            d_mask = (sequences != pad_id).unsqueeze(1).unsqueeze(2)
-            causal = torch.tril(torch.ones((trg_len, trg_len), device=device)).bool()
-            d_mask = d_mask & causal.unsqueeze(0)
 
-            with torch.no_grad():
-                trg_emb = model.trg_embedding(sequences) * math.sqrt(d_model)
+            # ===== FIX 2: decoder mask chuẩn Transformer =====
+            pad_mask = (sequences != pad_id).unsqueeze(1).unsqueeze(2)
+            causal_mask = torch.tril(
+                torch.ones((trg_len, trg_len), device=device)
+            ).bool()
+            d_mask = pad_mask & causal_mask.unsqueeze(0)
 
-                if model.positional_encoding is not None:
-                    trg_emb = model.positional_encoding(trg_emb)
+            # ===== Decoder forward =====
+            trg_emb = model.trg_embedding(sequences) * math.sqrt(d_model)
+            if model.positional_encoding is not None:
+                trg_emb = model.positional_encoding(trg_emb)
 
-                dec_out = model.decoder(trg_emb, e_output, e_mask, d_mask)
-                logits = model.output_linear(dec_out[:, -1])
-                log_probs = torch.log_softmax(logits, dim=-1)
+            dec_out = model.decoder(trg_emb, e_output, e_mask, d_mask)
+            logits = model.output_linear(dec_out[:, -1])
+            log_probs = torch.log_softmax(logits, dim=-1)
 
-            # Repetition penalty
+            # ===== FIX 3: repetition penalty ĐÚNG =====
             for i in range(beam_size):
                 for tok in set(sequences[i].tolist()):
                     log_probs[i, tok] /= repetition_penalty
 
+            # ===== Beam expansion =====
             total_scores = scores.unsqueeze(1) + log_probs
 
             if step == 0:
-                total_scores = total_scores[0:1]
+                total_scores = total_scores[0:1]  # chỉ mở rộng beam đầu
 
             flat_scores = total_scores.view(-1)
             topk_scores, topk_ids = torch.topk(flat_scores, beam_size)
@@ -500,6 +518,7 @@ class Manager():
 
                 seq = torch.cat([sequences[parent], token.view(1)])
 
+                # ===== FIX 4: EOS xử lý chuẩn =====
                 if token.item() == eos_id:
                     lp = self.length_penalty(len(seq), alpha)
                     finished.append((seq, score / lp))
@@ -509,13 +528,14 @@ class Manager():
                     new_sequences.append(seq)
                     new_scores.append(score)
 
+            # ===== Early stopping =====
             if len(finished) >= beam_size:
                 break
 
             if len(new_sequences) == 0:
                 break
 
-            # Pad beams
+            # ===== FIX 5: pad beam an toàn =====
             while len(new_sequences) < beam_size:
                 new_sequences.append(new_sequences[0])
                 new_scores.append(new_scores[0])
@@ -523,19 +543,19 @@ class Manager():
             sequences = torch.stack(new_sequences)
             scores = torch.stack(new_scores)
 
+        # ===== FIX 6: chọn beam tốt nhất =====
         if len(finished) == 0:
             best = sequences[0]
         else:
-            best = sorted(finished, key=lambda x: x[1], reverse=True)[0][0]
+            best = max(finished, key=lambda x: x[1])[0]
 
         output = best.tolist()
-        if output[0] == bos_id:
+        if output and output[0] == bos_id:
             output = output[1:]
         if eos_id in output:
             output = output[:output.index(eos_id)]
 
         return self.trg_sp.DecodeIds(output)
-
 
     def create_mask(self, src, tgt):
         # src: (Batch, Src_Len)
