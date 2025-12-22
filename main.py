@@ -418,147 +418,124 @@ class Manager():
         decoded_output = self.trg_sp.decode_ids(decoded_output)
         
         return decoded_output
+    
+    def length_penalty(self, length, alpha=0.6):
+        return ((5 + length) ** alpha) / ((5 + 1) ** alpha)
 
-    def beam_search(self, e_output, e_mask, accelerator=None):
-        # 1. Setup & Constants
-        if accelerator:
-            my_device = next(self.model.parameters()).device
-            model_engine = accelerator.unwrap_model(self.model)
-        else:
-            my_device = e_output.device
-            model_engine = self.model
 
-        # beam_size = 4  # Or self.beam_size
+    def has_repeat_ngram(self, seq, n):
+        if len(seq) < n * 2:
+            return False
+        seen = set()
+        for i in range(len(seq) - n + 1):
+            ng = tuple(seq[i:i+n])
+            if ng in seen:
+                return True
+            seen.add(ng)
+        return False
+
+
+    def beam_search(self, e_output, e_mask, beam_size=4):
+        device = e_output.device
+        model = self.model
+        model.eval()
+
         max_len = 100
-        batch_size = e_output.size(0)  # Should be 1 for inference
+        alpha = 0.6
+        repetition_penalty = 1.2
+        no_repeat_ngram_size = 3
 
-        # 2. Prepare Encoder Output for Beam Batching
-        # We must expand the encoder output to match beam size
-        # Shape: (Beam_Size, Src_Len, Dim)
+        # Expand encoder output
         e_output = e_output.repeat(beam_size, 1, 1)
         e_mask = e_mask.repeat(beam_size, 1, 1, 1)
 
-        # 3. Initialize Loop Variables
-        # Current indices: [Beam_Size, 1] -> start with BOS
-        cur_seq = torch.full((beam_size, 1), bos_id, dtype=torch.long, device=my_device)
+        # Beam states
+        sequences = torch.full((beam_size, 1), bos_id, dtype=torch.long, device=device)
+        scores = torch.zeros(beam_size, device=device)
+        scores[1:] = -1e9
 
-        # Scores: [Beam_Size] -> First beam is 0, others are -inf to force selection of first beam initially
-        cur_scores = torch.zeros(beam_size, device=my_device)
-        cur_scores[1:] = -1e9
+        finished = []
 
-        # Keep track of finished sequences
-        finished_seqs = []
-        finished_scores = []
+        for step in range(max_len):
 
-        # 4. Vectorized Loop
-        for pos in range(max_len):
+            trg_len = sequences.size(1)
+            d_mask = (sequences != pad_id).unsqueeze(1).unsqueeze(2)
+            causal = torch.tril(torch.ones((trg_len, trg_len), device=device)).bool()
+            d_mask = d_mask & causal.unsqueeze(0)
 
-            # --- PREPARE INPUT ---
-            # No loop here! We feed [Beam_Size, Seq_Len] directly.
-            trg_input = cur_seq
+            with torch.no_grad():
+                trg_emb = model.trg_embedding(sequences) * math.sqrt(d_model)
 
-            # Standard mask creation (Vectorized)
-            trg_len = trg_input.size(1)
-            d_pad_mask = (trg_input != self.pad_id).unsqueeze(1).unsqueeze(2)
-            nopeak_mask = torch.tril(torch.ones((trg_len, trg_len), device=my_device)).bool()
-            d_mask = d_pad_mask & nopeak_mask.unsqueeze(0)
+                if model.positional_encoding is not None:
+                    trg_emb = model.positional_encoding(trg_emb)
 
-            # --- FORWARD PASS (Run 4 beams at once) ---
-            # Note: If you implement KV Caching, this changes significantly.
-            # For now, we assume standard full-forward pass.
-            with torch.amp.autocast('cuda', enabled=True):  # Enable FP16 for speed
-                trg_emb = model_engine.trg_embedding(trg_input)
+                dec_out = model.decoder(trg_emb, e_output, e_mask, d_mask)
+                logits = model.output_linear(dec_out[:, -1])
+                log_probs = torch.log_softmax(logits, dim=-1)
 
-                trg_emb = trg_emb * math.sqrt(d_model)
-                
-                # Apply PE only if model has it (USE_ROPE=False)
-                # When using RoPE, positional info is applied inside attention layers
-                if model_engine.positional_encoding is not None:
-                    trg_emb = model_engine.positional_encoding(trg_emb)
-                
-                decoder_output = model_engine.decoder(trg_emb, e_output, e_mask, d_mask)
-                logits = model_engine.output_linear(decoder_output[:, -1, :])
-                log_probs = torch.log_softmax(logits, dim=-1)  # (Beam, Vocab)
+            # Repetition penalty
+            for i in range(beam_size):
+                for tok in set(sequences[i].tolist()):
+                    log_probs[i, tok] /= repetition_penalty
 
-            # --- CALCULATE SCORES ---
-            # Add current scores to log_probs
-            # Shape: (Beam, Vocab)
-            next_scores = cur_scores.unsqueeze(1) + log_probs
+            total_scores = scores.unsqueeze(1) + log_probs
 
-            # --- RANKING & SELECTION ---
-            # We flatten the matrix to find the top K the best tokens across ALL beams
-            # Shape: (Beam * Vocab)
-            next_scores_flat = next_scores.view(-1)
+            if step == 0:
+                total_scores = total_scores[0:1]
 
-            if pos == 0:
-                # On the first step, we only look at the first beam (since all others are duplicates)
-                # otherwise we get the same 4 words.
-                next_scores_flat = next_scores[0]  # (Vocab)
+            flat_scores = total_scores.view(-1)
+            topk_scores, topk_ids = torch.topk(flat_scores, beam_size)
 
-            # Get top K best scores and their indices
-            topk_scores, topk_indices = torch.topk(next_scores_flat, beam_size, dim=0)
-
-            # Convert flat indices back to (Beam_Index, Word_Index)
             vocab_size = log_probs.size(-1)
-            beam_indices = topk_indices.div(vocab_size, rounding_mode='floor')  # Which beam did it come from?
-            word_indices = topk_indices % vocab_size  # Which word is it?
+            beam_ids = topk_ids // vocab_size
+            token_ids = topk_ids % vocab_size
 
-            # --- BUILD NEXT STEP ---
-            new_seqs = []
+            new_sequences = []
             new_scores = []
 
-            num_active = 0
-
             for i in range(beam_size):
-                b_idx = beam_indices[i]  # Index of the parent beam
-                w_idx = word_indices[i]  # The new word
+                parent = beam_ids[i]
+                token = token_ids[i]
                 score = topk_scores[i]
 
-                # Reconstruct the sequence: Parent Sequence + New Word
-                # Note: We must clone to avoid reference issues
-                seq = torch.cat([cur_seq[b_idx], w_idx.unsqueeze(0)])
+                seq = torch.cat([sequences[parent], token.view(1)])
 
-                if w_idx.item() == eos_id:
-                    # Finished!
-                    # Length Penalty
-                    penalty_score = score / len(seq)
-                    finished_seqs.append(seq)
-                    finished_scores.append(penalty_score)
+                if token.item() == eos_id:
+                    lp = self.length_penalty(len(seq), alpha)
+                    finished.append((seq, score / lp))
                 else:
-                    new_seqs.append(seq)
+                    if self.has_repeat_ngram(seq.tolist(), no_repeat_ngram_size):
+                        continue
+                    new_sequences.append(seq)
                     new_scores.append(score)
-                    num_active += 1
 
-            # Check if we have enough finished sequences
-            if len(finished_seqs) >= beam_size:
+            if len(finished) >= beam_size:
                 break
 
-            # Pad new_seqs if we lost some beams to EOS (to keep batch size constant)
-            # This keeps the tensor shape valid for the next model run
-            while len(new_seqs) < beam_size:
-                new_seqs.append(new_seqs[0])  # Duplicate the best one (it won't matter, it effectively forks)
-                new_scores.append(torch.tensor(-1e9, device = my_device))  # Give it bad score so it dies next round
+            if len(new_sequences) == 0:
+                break
 
-            # Stack back into tensors
-            cur_seq = torch.stack(new_seqs)  # (Beam, Len)
-            cur_scores = torch.stack(new_scores)  # (Beam)
+            # Pad beams
+            while len(new_sequences) < beam_size:
+                new_sequences.append(new_sequences[0])
+                new_scores.append(new_scores[0])
 
-        # 5. Final Selection
-        if len(finished_seqs) == 0:
-            best_seq = cur_seq[0]
+            sequences = torch.stack(new_sequences)
+            scores = torch.stack(new_scores)
+
+        if len(finished) == 0:
+            best = sequences[0]
         else:
-            # Sort by best score (Higher is better for LogProbs, but check your sign!)
-            # Since log_probs are negative, closer to 0 is better.
-            # Using sorted(reverse=True) because -0.5 > -10.0
-            sorted_finished = sorted(zip(finished_seqs, finished_scores), key=lambda x: x[1], reverse=True)
-            best_seq = sorted_finished[0][0]
+            best = sorted(finished, key=lambda x: x[1], reverse=True)[0][0]
 
-        # Clean up (remove BOS/EOS)
-        best_seq = best_seq.tolist()
-        if best_seq[0] == bos_id: best_seq = best_seq[1:]
-        if best_seq[-1] == eos_id: best_seq = best_seq[:-1]
+        output = best.tolist()
+        if output[0] == bos_id:
+            output = output[1:]
+        if eos_id in output:
+            output = output[:output.index(eos_id)]
 
-        return self.trg_sp.DecodeIds(best_seq)
+        return self.trg_sp.DecodeIds(output)
+
 
     def create_mask(self, src, tgt):
         # src: (Batch, Src_Len)
