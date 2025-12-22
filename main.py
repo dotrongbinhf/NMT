@@ -360,11 +360,11 @@ class Manager():
                     #a
                     references.append(ref_text)
 
-                    if i < 3 and j == 0:
-                        if self.accelerator.is_main_process:
-                            print(f"\nSrc: {src_text}")
-                            print(f"Ref: {ref_text}")
-                            print(f"Pred: {pred_text}")
+                    # if i < 3 and j == 0:
+                    if self.accelerator.is_main_process:
+                        print(f"\nSrc: {src_text}")
+                        print(f"Ref: {ref_text}")
+                        print(f"Pred: {pred_text}")
 
 
         # 3. Calculate BLEU
@@ -637,7 +637,7 @@ if __name__=='__main__':
             dataset_name=DATASET_NAME,
             src_sp=manager.src_sp,
             trg_sp=manager.trg_sp,
-            split='test[:500]',  # Or 'validation' if test doesn't exist
+            split='test[:20]',  # Or 'validation' if test doesn't exist
             workers = 0,
             my_batch_size = 1
         )
