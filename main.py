@@ -446,9 +446,10 @@ class Manager():
         repetition_penalty = 1.2
         no_repeat_ngram_size = 3
 
-        bos_id = self.bos_id
-        eos_id = self.eos_id
-        pad_id = self.pad_id
+        # ===== FIX QUAN TRỌNG: LẤY TOKEN ID ĐÚNG =====
+        bos_id = self.trg_sp.bos_id()
+        eos_id = self.trg_sp.eos_id()
+        pad_id = self.trg_sp.pad_id()
         d_model = model.d_model
 
         # ===== FIX 1: repeat encoder output ĐÚNG CHUẨN =====
